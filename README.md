@@ -1,10 +1,10 @@
 # TokenSaver
 
 <p align="center">
-  <img src="media/logo.png" alt="TokenSaver" width="320"/>
+  <img src="media/cat.png" alt="TokenSaver mascot" width="160"/>
 </p>
 
-**Save AI tokens automatically.** Visual dashboard for [TokViz](https://github.com/maazizit/tokviz) — compress shell outputs, track savings across Cursor, GitHub Copilot, and Gemini CLI.
+**Save AI tokens automatically.** Visual dashboard for [TokViz](https://github.com/maazizit/tokviz) — compress shell outputs, track savings across Cursor, GitHub Copilot, Gemini CLI, and Antigravity CLI.
 
 Reduce your AI token consumption by **30-70%** with smart compression of terminal outputs (`git diff`, test logs, `grep` results...).
 
@@ -103,6 +103,12 @@ Or for GitHub Copilot:
 TokenSaver: Install TokViz Compression (Copilot)
 ```
 
+Or for Antigravity CLI:
+
+```
+TokenSaver: Install TokViz Compression (Antigravity)
+```
+
 **Restart your IDE** after installation.
 
 ### 4. View Your Savings
@@ -120,6 +126,7 @@ TokenSaver: Show Dashboard
 | `TokenSaver: Show Dashboard` | Open visual savings dashboard |
 | `TokenSaver: Install TokViz Compression (Cursor)` | Install hooks for Cursor |
 | `TokenSaver: Install TokViz Compression (Copilot)` | Install hooks for Copilot |
+| `TokenSaver: Install TokViz Compression (Antigravity)` | Install hooks for Antigravity CLI |
 | `TokenSaver: Check Installation` | Verify TokViz hooks are working |
 | `TokenSaver: View Statistics` | Show detailed stats (CLI output) |
 | `TokenSaver: Compare Agents` | Compare token usage across agents |
@@ -169,7 +176,7 @@ Click it to open the dashboard.
 
 - **VS Code** 1.85.0 or higher
 - **TokViz CLI** installed globally
-- **Cursor**, **GitHub Copilot**, or **Gemini CLI** (at least one)
+- **Cursor**, **GitHub Copilot**, **Gemini CLI**, or **Antigravity CLI** (at least one)
 
 ## How Much Can You Save?
 

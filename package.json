@@ -2,7 +2,7 @@
   "name": "tokensaver",
   "displayName": "TokenSaver",
   "description": "Save AI tokens with smart compression. Powered by TokViz for shell output compression. Real-time dashboard shows your savings across Cursor, Copilot, and Gemini.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "maazizit",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -65,6 +65,10 @@
         "title": "TokenSaver: Install TokViz Compression (Copilot)"
       },
       {
+        "command": "tokensaver.installHooksAntigravity",
+        "title": "TokenSaver: Install TokViz Compression (Antigravity)"
+      },
+      {
         "command": "tokensaver.doctor",
         "title": "TokenSaver: Check Installation"
       },
@@ -102,7 +106,7 @@
         },
         "tokensaver.defaultAgent": {
           "type": "string",
-          "enum": ["cursor", "copilot", "gemini"],
+          "enum": ["cursor", "copilot", "gemini", "antigravity"],
           "default": "cursor",
           "description": "Default AI agent for hook installation"
         },

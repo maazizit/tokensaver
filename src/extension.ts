@@ -63,7 +63,7 @@ async function promptInstallTokviz(): Promise<void> {
   }
 }
 
-async function installHooks(agent: "cursor" | "copilot" | "gemini"): Promise<void> {
+async function installHooks(agent: "cursor" | "copilot" | "gemini" | "antigravity"): Promise<void> {
   const installed = await checkTokvizInstalled();
   if (!installed) {
     await promptInstallTokviz();
@@ -450,6 +450,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("tokensaver.installHooksCopilot", () => {
       installHooks("copilot");
+    }),
+
+    vscode.commands.registerCommand("tokensaver.installHooksAntigravity", () => {
+      installHooks("antigravity");
     }),
 
     vscode.commands.registerCommand("tokensaver.doctor", runDoctor),
