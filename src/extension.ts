@@ -1,8 +1,5 @@
 import * as vscode from "vscode";
 import * as child_process from "child_process";
-import * as path from "path";
-import * as fs from "fs";
-import * as os from "os";
 
 interface TokVizStats {
   rawTokens: number;
@@ -224,27 +221,36 @@ async function compareAgents(): Promise<void> {
   }
 }
 
-function createDashboardPanel(context: vscode.ExtensionContext): void {
+function refreshDashboard(webview: vscode.Webview): void {
+  webview.html = getDashboardHtml();
+  getStats().then((stats) => {
+    if (stats) {
+      webview.postMessage({ type: "updateStats", stats });
+    } else {
+      webview.postMessage({ type: "noStats" });
+    }
+  });
+}
+
+class DashboardViewProvider implements vscode.WebviewViewProvider {
+  resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ): void {
+    webviewView.webview.options = { enableScripts: true };
+    refreshDashboard(webviewView.webview);
+  }
+}
+
+function createDashboardPanel(_context: vscode.ExtensionContext): void {
   const panel = vscode.window.createWebviewPanel(
     "tokensaverDashboard",
     "TokenSaver Dashboard",
     vscode.ViewColumn.One,
-    {
-      enableScripts: true,
-    }
+    { enableScripts: true }
   );
-
-  panel.webview.html = getDashboardHtml();
-
-  // Update dashboard with real data
-  getStats().then((stats) => {
-    if (stats) {
-      panel.webview.postMessage({
-        type: "updateStats",
-        stats,
-      });
-    }
-  });
+  refreshDashboard(panel.webview);
 }
 
 function getDashboardHtml(): string {
@@ -333,6 +339,15 @@ function getDashboardHtml(): string {
             font-size: 48px;
             margin: 20px 0;
         }
+        .empty-state {
+            text-align: center;
+            padding: 24px;
+            margin: 20px 0;
+            border: 1px dashed var(--vscode-panel-border);
+            border-radius: 8px;
+            color: var(--vscode-descriptionForeground);
+        }
+        .empty-state.hidden { display: none; }
     </style>
 </head>
 <body>
@@ -340,6 +355,11 @@ function getDashboardHtml(): string {
         <div class="emoji">💎</div>
         <h1>TokenSaver Dashboard</h1>
         <p>Powered by TokViz Compression</p>
+    </div>
+
+    <div class="empty-state" id="emptyState">
+        <p>No savings data yet.</p>
+        <p>Install TokViz CLI, run <strong>TokenSaver: Install TokViz Compression</strong>, then use your AI agent in Agent mode.</p>
     </div>
 
     <div class="stats-grid">
@@ -380,7 +400,12 @@ function getDashboardHtml(): string {
 
         window.addEventListener('message', event => {
             const message = event.data;
+            if (message.type === 'noStats') {
+                document.getElementById('emptyState')?.classList.remove('hidden');
+                return;
+            }
             if (message.type === 'updateStats') {
+                document.getElementById('emptyState')?.classList.add('hidden');
                 const stats = message.stats;
                 document.getElementById('savedTokens').textContent = 
                     (stats.savedTokens / 1000).toFixed(1) + 'K';
@@ -437,6 +462,14 @@ export function activate(context: vscode.ExtensionContext): void {
       updateStatusBar();
     }
   });
+
+  // Sidebar webview (package.json: tokensaver.dashboard)
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      "tokensaver.dashboard",
+      new DashboardViewProvider()
+    )
+  );
 
   // Register commands
   context.subscriptions.push(
