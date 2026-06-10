@@ -1,7 +1,7 @@
 # TokenSaver
 
 <p align="center">
-  <img src="media/icon.png" alt="TokenSaver" width="96"/>
+  <img src="media/logo.png" alt="TokenSaver" width="320"/>
 </p>
 
 **Save AI tokens automatically.** Visual dashboard for [TokViz](https://github.com/maazizit/tokviz) — compress shell outputs, track savings across Cursor, GitHub Copilot, and Gemini CLI.

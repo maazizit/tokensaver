@@ -2,7 +2,7 @@
   "name": "tokensaver",
   "displayName": "TokenSaver",
   "description": "Save AI tokens with smart compression. Powered by TokViz for shell output compression. Real-time dashboard shows your savings across Cursor, Copilot, and Gemini.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "maazizit",
   "license": "MIT",
   "icon": "media/icon.png",
