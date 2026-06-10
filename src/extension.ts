@@ -430,10 +430,19 @@ async function autoEnableDetectedAgents(
 // ---------------------------------------------------------------------------
 
 class DashboardViewProvider implements vscode.WebviewViewProvider {
+  constructor(private readonly extensionUri: vscode.Uri) {}
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     dashboardView = webviewView;
-    webviewView.webview.options = { enableScripts: true };
-    webviewView.webview.html = getDashboardHtml();
+    const mediaRoot = vscode.Uri.joinPath(this.extensionUri, "media");
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [mediaRoot],
+    };
+    const catSrc = webviewView.webview.asWebviewUri(
+      vscode.Uri.joinPath(mediaRoot, "cat.png")
+    );
+    webviewView.webview.html = getDashboardHtml(catSrc.toString());
 
     webviewView.webview.onDidReceiveMessage((message) => {
       if (message?.type === "enableTracking") {
@@ -453,7 +462,7 @@ class DashboardViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-function getDashboardHtml(): string {
+function getDashboardHtml(catSrc: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -469,7 +478,7 @@ function getDashboardHtml(): string {
     margin: 0;
   }
   .header { text-align: center; padding: 18px 0 14px; }
-  .header .glyph { font-size: 40px; line-height: 1; }
+  .header .mascot { width: 72px; height: 72px; object-fit: contain; }
   .header h1 { margin: 8px 0 2px; font-size: 22px; font-weight: 300; }
   .header p { margin: 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
 
@@ -564,7 +573,7 @@ function getDashboardHtml(): string {
 </head>
 <body>
   <div class="header">
-    <div class="glyph">⚡</div>
+    <img class="mascot" src="${catSrc}" alt="TokenSaver cat mascot" />
     <h1>TokenSaver</h1>
     <p>Live token savings · updated automatically</p>
   </div>
@@ -684,7 +693,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       "tokensaver.dashboard",
-      new DashboardViewProvider()
+      new DashboardViewProvider(context.extensionUri)
     )
   );
 
