@@ -140,6 +140,10 @@ npm run compile
 # F5 → Extension Development Host
 ```
 
+## Market research
+
+We studied the landscape before building — [Market Benchmark](docs/MARKET-BENCHMARK.md) covers Eating Token, TokenLens AI, RTK, Caveman, and where TokenSaver + TokGuess fit. *(Yes, there is a spreadsheet. Yes, the cat approved it.)*
+
 ## Related projects
 
 - **[TokViz](https://github.com/maazizit/tokviz)** — compression engine (bundled inside TokenSaver)
