@@ -1,27 +1,31 @@
 {
-  "name": "wayfind",
-  "displayName": "Wayfind",
-  "description": "Find your way in any repo: fact-based reference cards (integrations map, module patterns, how-tos) with freshness tracking. Every fact cited file:line.",
-  "version": "0.1.2",
+  "name": "tokensaver",
+  "displayName": "TokenSaver",
+  "description": "Save AI tokens with smart compression. Powered by TokViz for shell output compression. Real-time dashboard shows your savings across Cursor, Copilot, and Gemini.",
+  "version": "0.1.0",
   "publisher": "maazizit",
   "license": "MIT",
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/maazizit/wayfind"
+    "url": "https://github.com/maazizit/tokensaver"
   },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Machine Learning",
+    "Visualization"
   ],
   "keywords": [
-    "documentation",
-    "onboarding",
-    "architecture",
-    "integrations",
-    "reference"
+    "tokens",
+    "ai",
+    "copilot",
+    "cursor",
+    "compression",
+    "tokviz",
+    "cost-optimization",
+    "context"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -31,84 +35,91 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "wayfind",
-          "title": "Wayfind",
-          "icon": "media/wayfind.svg"
+          "id": "tokensaver",
+          "title": "TokenSaver",
+          "icon": "media/tokensaver.svg"
         }
       ]
     },
     "views": {
-      "wayfind": [
+      "tokensaver": [
         {
-          "id": "wayfind.list",
-          "name": "Cards",
-          "icon": "media/wayfind.svg"
+          "id": "tokensaver.dashboard",
+          "name": "Savings Dashboard",
+          "type": "webview"
         }
       ]
     },
     "commands": [
       {
-        "command": "wayfind.refresh",
-        "title": "Wayfind: Refresh List",
-        "icon": "$(refresh)"
+        "command": "tokensaver.showDashboard",
+        "title": "TokenSaver: Show Dashboard",
+        "icon": "$(graph)"
       },
       {
-        "command": "wayfind.generateIntegrations",
-        "title": "Wayfind: Generate Integrations Card"
+        "command": "tokensaver.installHooks",
+        "title": "TokenSaver: Install TokViz Compression (Cursor)"
       },
       {
-        "command": "wayfind.generateModulePattern",
-        "title": "Wayfind: Generate Module Pattern Card"
+        "command": "tokensaver.installHooksCopilot",
+        "title": "TokenSaver: Install TokViz Compression (Copilot)"
       },
       {
-        "command": "wayfind.generateHowto",
-        "title": "Wayfind: Generate How-To Card"
+        "command": "tokensaver.doctor",
+        "title": "TokenSaver: Check Installation"
       },
       {
-        "command": "wayfind.rescan",
-        "title": "Wayfind: Re-scan Card (freshness)",
-        "icon": "$(sync)"
+        "command": "tokensaver.viewStats",
+        "title": "TokenSaver: View Statistics",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "tokensaver.compareAgents",
+        "title": "TokenSaver: Compare Agents"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "wayfind.refresh",
-          "when": "view == wayfind.list",
+          "command": "tokensaver.showDashboard",
+          "when": "view == tokensaver.dashboard",
           "group": "navigation"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "wayfind.rescan",
-          "when": "view == wayfind.list && viewItem == fiche",
-          "group": "inline"
         }
       ]
     },
     "configuration": {
-      "title": "Wayfind",
+      "title": "TokenSaver",
       "properties": {
-        "wayfind.deliveryMode": {
+        "tokensaver.tokvizPath": {
           "type": "string",
-          "enum": ["clipboard", "terminal"],
-          "default": "clipboard",
-          "description": "How to run generation: clipboard (paste in Copilot Chat — default) or terminal (external CLI)."
+          "default": "tokviz",
+          "description": "Path to TokViz CLI executable (default: tokviz in PATH)"
         },
-        "wayfind.agentCommand": {
-          "type": "string",
-          "default": "",
-          "description": "CLI for terminal mode only (e.g. gh copilot). Leave empty — use clipboard + Copilot Chat in VS Code."
+        "tokensaver.autoInstallHooks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically install TokViz compression hooks on first run"
         },
-        "wayfind.fichesDir": {
+        "tokensaver.defaultAgent": {
           "type": "string",
-          "default": "docs/fiches",
-          "description": "Cards directory, relative to the workspace root."
+          "enum": ["cursor", "copilot", "gemini"],
+          "default": "cursor",
+          "description": "Default AI agent for hook installation"
         },
-        "wayfind.skillPath": {
-          "type": "string",
-          "default": "",
-          "description": "Optional path to the repo-fiches SKILL.md (ai-agents-kit). Added to the prompt when set."
+        "tokensaver.enterpriseMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enterprise mode: metrics only, no command content logged"
+        },
+        "tokensaver.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show token savings in status bar"
+        },
+        "tokensaver.notifyOnSavings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notifications when significant token savings detected"
         }
       }
     }
