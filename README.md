@@ -4,9 +4,9 @@
   <img src="media/cat.png" alt="TokenSaver mascot" width="160"/>
 </p>
 
-**Save AI tokens automatically.** VS Code dashboard for [TokViz](https://github.com/maazizit/tokviz) — compress shell outputs and track savings across Cursor, GitHub Copilot, Gemini CLI, and Antigravity CLI.
+**Compress AI shell output automatically — zero setup.** Install TokenSaver only. TokViz is bundled inside: hooks install silently on startup for Cursor, Copilot, and Gemini/Antigravity. No `npm install`, no manual commands.
 
-Reduce token waste from verbose terminal output (`git diff`, test logs, `grep` results…) by **30–70%**.
+Reduce token waste from verbose terminal output (`git diff`, test logs, `grep` results…) by **30–70%**. Dashboard + status bar show how many tokens you **saved** — not how many you spent (that's [TokGuess](https://github.com/maazizit/tokguess)).
 
 ## What TokenSaver does (and does not)
 

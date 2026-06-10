@@ -1,8 +1,8 @@
 {
   "name": "tokensaver",
   "displayName": "TokenSaver",
-  "description": "Save AI tokens with smart compression. Powered by TokViz for shell output compression. Real-time dashboard shows your savings across Cursor, Copilot, and Gemini.",
-  "version": "0.3.0",
+  "description": "Compress AI shell output automatically — no TokViz install needed. Bundles TokViz, detects Cursor/Copilot/Gemini-Antigravity, installs hooks silently. Dashboard shows tokens saved. Unlike TokGuess (usage tracking), this actually reduces context sent to your agent.",
+  "version": "0.3.1",
   "publisher": "maazizit",
   "license": "MIT",
   "icon": "media/icon.png",
