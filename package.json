@@ -2,7 +2,7 @@
   "name": "tokensaver",
   "displayName": "TokenSaver",
   "description": "Save AI tokens with smart compression. Powered by TokViz for shell output compression. Real-time dashboard shows your savings across Cursor, Copilot, and Gemini.",
-  "version": "0.1.3",
+  "version": "0.3.0",
   "publisher": "maazizit",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -57,35 +57,19 @@
         "icon": "$(graph)"
       },
       {
-        "command": "tokensaver.installHooks",
-        "title": "TokenSaver: Install TokViz Compression (Cursor)"
+        "command": "tokensaver.refresh",
+        "title": "TokenSaver: Refresh",
+        "icon": "$(refresh)"
       },
       {
-        "command": "tokensaver.installHooksCopilot",
-        "title": "TokenSaver: Install TokViz Compression (Copilot)"
-      },
-      {
-        "command": "tokensaver.installHooksAntigravity",
-        "title": "TokenSaver: Install TokViz Compression (Antigravity)"
-      },
-      {
-        "command": "tokensaver.doctor",
-        "title": "TokenSaver: Check Installation"
-      },
-      {
-        "command": "tokensaver.viewStats",
-        "title": "TokenSaver: View Statistics",
-        "icon": "$(graph-line)"
-      },
-      {
-        "command": "tokensaver.compareAgents",
-        "title": "TokenSaver: Compare Agents"
+        "command": "tokensaver.enableTracking",
+        "title": "TokenSaver: Enable Token Tracking"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "tokensaver.showDashboard",
+          "command": "tokensaver.refresh",
           "when": "view == tokensaver.dashboard",
           "group": "navigation"
         }
@@ -94,44 +78,19 @@
     "configuration": {
       "title": "TokenSaver",
       "properties": {
-        "tokensaver.tokvizPath": {
-          "type": "string",
-          "default": "tokviz",
-          "description": "Path to TokViz CLI executable (default: tokviz in PATH)"
-        },
-        "tokensaver.autoInstallHooks": {
-          "type": "boolean",
-          "default": false,
-          "description": "Automatically install TokViz compression hooks on first run"
-        },
-        "tokensaver.defaultAgent": {
-          "type": "string",
-          "enum": ["cursor", "copilot", "gemini", "antigravity"],
-          "default": "cursor",
-          "description": "Default AI agent for hook installation"
-        },
-        "tokensaver.enterpriseMode": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enterprise mode: metrics only, no command content logged"
-        },
         "tokensaver.showStatusBar": {
           "type": "boolean",
           "default": true,
-          "description": "Show token savings in status bar"
-        },
-        "tokensaver.notifyOnSavings": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show notifications when significant token savings detected"
+          "description": "Show token savings in the status bar"
         }
       }
     }
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "prepare-cli": "node scripts/prepare-cli.mjs",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run prepare-cli && npm run compile",
     "package": "vsce package"
   },
   "devDependencies": {

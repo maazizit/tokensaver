@@ -4,31 +4,21 @@
   <img src="media/cat.png" alt="TokenSaver mascot" width="160"/>
 </p>
 
-**Save AI tokens automatically.** Visual dashboard for [TokViz](https://github.com/maazizit/tokviz) — compress shell outputs, track savings across Cursor, GitHub Copilot, Gemini CLI, and Antigravity CLI.
+**Save AI tokens automatically.** VS Code dashboard for [TokViz](https://github.com/maazizit/tokviz) — compress shell outputs and track savings across Cursor, GitHub Copilot, Gemini CLI, and Antigravity CLI.
 
-Reduce your AI token consumption by **30-70%** with smart compression of terminal outputs (`git diff`, test logs, `grep` results...).
+Reduce token waste from verbose terminal output (`git diff`, test logs, `grep` results…) by **30–70%**.
 
-## Why TokenSaver?
+## What TokenSaver does (and does not)
 
-AI agents consume massive amounts of tokens from verbose shell outputs. TokenSaver uses **TokViz compression hooks** to reduce this waste:
+| Layer | Tool | Role |
+|-------|------|------|
+| **Compression** | TokViz (bundled) | Hooks shrink shell output before the agent reads it |
+| **Visibility** | TokenSaver | Dashboard + status bar from `~/.tokviz/events.json` |
+| **Usage tracking** | [TokGuess](https://github.com/maazizit/tokguess) | Real token counts from Copilot / Claude / Antigravity logs (separate extension) |
 
-- ❌ **Before**: `git diff` outputs 50KB → 12,500 tokens sent to AI
-- ✅ **After**: Compressed to 8KB → 2,000 tokens (84% saved!)
-
-### Key Features
-
-- 🎯 **One-Click Setup** — Install TokViz hooks for Cursor/Copilot with a single command
-- 📊 **Visual Dashboard** — Real-time graphs showing your token savings
-- 💰 **Cost Tracking** — See how much you save daily/weekly/monthly
-- 🔍 **Detailed Analytics** — Top compressed commands, session comparisons
-- ⚡ **Status Bar Widget** — Live savings counter in VS Code
-- 🔔 **Smart Notifications** — Alerts when large savings detected
+TokenSaver does **not** use RTK or Caveman directly. TokViz is an original implementation inspired by their patterns (shell hooks + optional prose skills).
 
 ## How it works
-
-## How it works
-
-TokenSaver is the **visual interface** for [TokViz](https://github.com/maazizit/tokviz), a CLI tool that compresses AI agent context via system hooks.
 
 ```mermaid
 flowchart LR
@@ -39,199 +29,105 @@ flowchart LR
     D -->|read| E[TokenSaver Dashboard]
 ```
 
-### The TokViz Layer (Behind the Scenes)
+### TokViz layer (automatic, invisible)
 
-TokViz installs **system hooks** that intercept shell commands before they reach your AI agent:
+On extension startup, TokenSaver:
+
+1. Bundles TokViz CLI inside the extension — **no npm, no global install**
+2. **Detects** which agents are present on your machine
+3. Silently runs `tokviz init -g --agent <name>` for each
+
+| Detected | How | TokViz agent |
+|----------|-----|--------------|
+| Cursor IDE | App name or `~/.cursor` | `cursor` |
+| GitHub Copilot | Extension or `~/.copilot/session-state` | `copilot` |
+| Gemini / Antigravity | `~/.gemini` or Antigravity brain paths | `gemini` |
+| Claude Code | `~/.claude/projects` | no hooks yet — use TokGuess for usage |
+
+Hooks are written to:
 
 - **Cursor**: `~/.cursor/hooks.json`
 - **Copilot**: `~/.copilot/hooks/tokviz-tracker.json`
 - **Gemini**: `~/.gemini/hooks.json`
 
-When an agent runs `git diff`, `npm test`, or any shell command, TokViz:
-1. Captures the output
-2. Compresses it intelligently (removes duplicates, summarizes, keeps important parts)
-3. Returns the compressed version to the agent
-4. Logs the savings to `~/.tokviz/events.json`
+When an agent runs `git diff`, `npm test`, or any shell command in **Agent mode**, TokViz compresses the output and logs savings to `~/.tokviz/events.json`.
 
-### The TokenSaver Layer (What You See)
+### TokenSaver layer (what you see)
 
-TokenSaver extension provides the UI on top:
-
-- **Dashboard**: Visual graphs of your savings over time
-- **Installation**: One-click setup of TokViz hooks
-- **Monitoring**: Real-time status bar showing daily savings
-- **Analytics**: Compare agents, view top compressed commands
-- **Verification**: Check that hooks are working correctly
+- **Sidebar dashboard** — total saved, today, per-agent breakdown
+- **Status bar** — `⚡ -12.6K tokens (38%)`
+- **Live refresh** — file watcher on `~/.tokviz/events.json`
 
 ## Quick Start
 
-### 1. Install TokViz CLI (required)
+### Zero-setup (default)
 
-TokenSaver requires TokViz CLI to be installed:
+1. Install the extension (VS Code marketplace or `.vsix`)
+2. Reload the window
+3. Use your AI agent in **Agent mode**
 
-```bash
-# Option 1: npm (recommended)
-npm install -g @tokviz/cli
-
-# Option 2: from source
-git clone https://github.com/maazizit/tokviz
-cd tokviz
-pnpm install && pnpm build
-pnpm link --global
-```
-
-### 2. Install TokenSaver Extension
+That's it. No commands, no npm, no TokViz install.
 
 ```bash
-# From VSIX
-code --install-extension tokensaver-0.1.0.vsix
-
-# Or from VS Code Marketplace (coming soon)
+code --install-extension tokensaver-0.3.0.vsix
 ```
 
-### 3. Setup Compression Hooks
+### Manual re-enable (optional)
 
-Open VS Code Command Palette (`Cmd+Shift+P`) and run:
-
-```
-TokenSaver: Install TokViz Compression (Cursor)
-```
-
-Or for GitHub Copilot:
+If auto-detection missed an agent:
 
 ```
-TokenSaver: Install TokViz Compression (Copilot)
+TokenSaver: Enable Token Tracking
 ```
 
-Or for Antigravity CLI:
-
-```
-TokenSaver: Install TokViz Compression (Antigravity)
-```
-
-**Restart your IDE** after installation.
-
-### 4. View Your Savings
-
-Click the **TokenSaver** icon in the sidebar, or run:
-
-```
-TokenSaver: Show Dashboard
-```
+Pick `cursor`, `copilot`, or `gemini`, then reload the window.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `TokenSaver: Show Dashboard` | Open visual savings dashboard |
-| `TokenSaver: Install TokViz Compression (Cursor)` | Install hooks for Cursor |
-| `TokenSaver: Install TokViz Compression (Copilot)` | Install hooks for Copilot |
-| `TokenSaver: Install TokViz Compression (Antigravity)` | Install hooks for Antigravity CLI |
-| `TokenSaver: Check Installation` | Verify TokViz hooks are working |
-| `TokenSaver: View Statistics` | Show detailed stats (CLI output) |
-| `TokenSaver: Compare Agents` | Compare token usage across agents |
-
-## Dashboard Features
-
-### 📊 Overview Tab
-- Total tokens saved (daily/weekly/monthly)
-- Savings percentage
-- Top 5 most compressed commands
-- Trend graph
-
-### 📈 Analytics Tab
-- Command-by-command breakdown
-- Session comparison
-- Agent comparison (Cursor vs Copilot)
-- Export reports
-
-### ⚙️ Settings Tab
-- Configure compression level
-- Enable/disable notifications
-- Enterprise mode (no command logging)
-- Auto-install hooks
-
-## Status Bar
-
-The status bar shows live savings:
-
-```
-💎 TokenSaver: -45.2K tokens (38%) saved today
-```
-
-Click it to open the dashboard.
+| `TokenSaver: Show Dashboard` | Open savings dashboard |
+| `TokenSaver: Refresh` | Reload stats from disk |
+| `TokenSaver: Enable Token Tracking` | Manually install hooks for an agent |
 
 ## Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `tokensaver.tokvizPath` | `tokviz` | Path to TokViz CLI |
-| `tokensaver.autoInstallHooks` | `false` | Auto-install hooks on startup |
-| `tokensaver.defaultAgent` | `cursor` | Default agent for installation |
-| `tokensaver.enterpriseMode` | `false` | Metrics only, no command content |
-| `tokensaver.showStatusBar` | `true` | Show savings in status bar |
-| `tokensaver.notifyOnSavings` | `true` | Notify on large savings |
+| `tokensaver.showStatusBar` | `true` | Show savings in the status bar |
 
 ## Requirements
 
-- **VS Code** 1.85.0 or higher
-- **TokViz CLI** installed globally
+- **VS Code** 1.85.0+
 - **Cursor**, **GitHub Copilot**, **Gemini CLI**, or **Antigravity CLI** (at least one)
+- **Agent mode** — manual terminal commands do not trigger hooks
 
-## How Much Can You Save?
-
-Real-world examples from TokViz users:
+## How much can you save?
 
 | Command | Before | After | Saved |
 |---------|--------|-------|-------|
-| `git diff` | 50KB (12.5K tokens) | 8KB (2K tokens) | **84%** |
-| `cargo test` | 120KB (30K tokens) | 15KB (3.8K tokens) | **87%** |
-| `npm run build` | 80KB (20K tokens) | 12KB (3K tokens) | **85%** |
-| `grep -r pattern` | 200KB (50K tokens) | 25KB (6.3K tokens) | **87%** |
+| `git diff` | 50KB (~12.5K tokens) | 8KB (~2K tokens) | **~84%** |
+| `cargo test` | 120KB (~30K tokens) | 15KB (~3.8K tokens) | **~87%** |
+| `npm run build` | 80KB (~20K tokens) | 12KB (~3K tokens) | **~85%** |
 
-**Average savings: 30-70% of total token consumption**
-
-## Enterprise Mode
-
-For companies concerned about command logging:
-
-```bash
-# Install in enterprise mode (metrics only, no command text)
-TokenSaver: Install TokViz Compression (Cursor)
-→ Check "Enterprise Mode" in settings
-```
-
-Data stays local in `~/.tokviz/` on your machine. No cloud sync.
+Numbers are **estimates** (~4 chars/token). Good for relative savings, not exact billing.
 
 ## Troubleshooting
 
-### Hooks not working?
-
-```
-TokenSaver: Check Installation
-```
-
-This runs `tokviz doctor` and verifies:
-- TokViz CLI is installed
-- Hooks files exist
-- Hooks are executable
-- Events are being logged
-
 ### Dashboard shows no data?
 
-1. Make sure you're using **Agent mode** (not terminal commands you type manually)
-2. Restart VS Code after hook installation
-3. Check `~/.tokviz/events.json` exists and has data
+1. Use **Agent mode** (not the integrated terminal you type into)
+2. Reload VS Code after first install
+3. Check `~/.tokviz/events.json` has entries
+4. Run `tokviz doctor` if you have the CLI globally, or use **Enable Token Tracking**
 
-### TokViz CLI not found?
+### Hooks not installed?
 
-Add TokViz to your PATH or configure:
+Check `~/.tokviz/cli-path` points to the bundled CLI. Re-run **Enable Token Tracking** and reload.
 
-```json
-{
-  "tokensaver.tokvizPath": "/absolute/path/to/tokviz"
-}
-```
+### Claude detected but no compression?
+
+TokViz hooks are not available for Claude Code yet. Use **TokGuess** for Claude token visibility.
 
 ## Development
 
@@ -239,28 +135,22 @@ Add TokViz to your PATH or configure:
 git clone https://github.com/maazizit/tokensaver
 cd tokensaver
 npm install
+npm run prepare-cli   # copies CLI from sibling tok-viz repo
 npm run compile
-
-# Press F5 in VS Code → Extension Development Host
+# F5 → Extension Development Host
 ```
 
-## Related Projects
+## Related projects
 
-- **[TokViz](https://github.com/maazizit/tokviz)** — CLI tool for token compression (required backend)
-- **[RTK](https://github.com/rtk-ai/rtk)** — Rust Token Killer (inspiration)
-- **[Caveman](https://github.com/JuliusBrussee/caveman)** — Prose compression (inspiration)
+- **[TokViz](https://github.com/maazizit/tokviz)** — compression engine (bundled inside TokenSaver)
+- **[TokGuess](https://github.com/maazizit/tokguess)** — token usage dashboard for Copilot / Claude / Antigravity
+- **[RTK](https://github.com/rtk-ai/rtk)** — inspiration for shell compression pattern
+- **[Caveman](https://github.com/JuliusBrussee/caveman)** — inspiration for prose compression pattern
 
 ## Credits
 
 Built by **Zahra Maaziz** · Powered by **[TokViz](https://github.com/maazizit/tokviz)**
 
-Inspired by RTK's shell compression and Caveman's prose optimization.
-
 ## License
 
 MIT
-
----
-
-**Save tokens. Save money. Code smarter with TokenSaver.**
-

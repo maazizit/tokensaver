@@ -5,6 +5,87 @@ All notable changes to the "TokenSaver" extension will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-11
+
+### ✨ Added
+
+- **🔋 Fully self-contained — no npm, no global CLI, no buttons**
+  - The TokViz CLI is now **bundled inside the extension** (`bundled/cli.bundle.mjs`)
+  - Hooks invoke the bundled CLI through VS Code's own Node runtime via `~/.tokviz/cli-path`
+  - Works on a fresh machine with zero external dependencies (only `node` on PATH)
+
+- **🤖 Auto-detect agents** — silent hook install for every detected agent
+  - Cursor IDE (`~/.cursor` or app name)
+  - GitHub Copilot (extension or `~/.copilot/session-state`)
+  - Gemini / Antigravity (`~/.gemini`, Antigravity brain paths)
+  - Re-checks every 5 minutes for newly installed agents
+  - Claude detected → logged; use TokGuess for usage (no TokViz hooks yet)
+
+- **📊 Autonomous dashboard** — reads `~/.tokviz/events.json` directly
+  - Live updates via a file watcher (no CLI calls to render stats)
+  - Per-agent breakdown, today's savings, compression efficiency bar
+  - Real-time status bar: `⚡ -12.6K tokens (10%)`
+
+### Changed
+
+- **Breaking**: Removed the broken `npm install -g tokviz` auto-install flow
+  (the public `tokviz` npm name belongs to an unrelated package)
+- Removed the "Install TokViz Now" button and prompt-based setup
+- Removed obsolete commands (`autoSetup`, `installHooks*`, `doctor`, `compareAgents`)
+  and settings (`autoInstall`, `defaultAgent`, `enterpriseMode`, `notifyOnSavings`, `tokvizPath`)
+- `Enable Tracking` now runs the bundled CLI instead of a global binary
+
+### Fixed
+
+- Installation no longer fails with `EEXIST` / wrong-package errors
+- Detection no longer relies on the non-existent `tokviz --version` command
+
+## [0.2.0] - 2026-06-10
+
+### ✨ Added
+
+- **🚀 Zero-Setup Auto-Installation** — Completely silent installation on first run
+  - **No prompts, no buttons, no clicks required**
+  - Automatically installs TokViz CLI via npm in background
+  - Auto-configures compression hooks for detected AI agent
+  - Just install extension and it works — users go from install to savings with 0 manual steps
+  
+- **Smart Installation Flow**
+  - `tokensaver.autoInstall` setting (default: `true`) — enables silent auto-install
+  - Automatic retry logic if initial installation fails
+  - Graceful fallback to manual install if npm not available
+  - One-time installation attempt (won't spam on every launch)
+  
+- **Dashboard Fallback Button** — If auto-install fails or is disabled
+  - "Install TokViz Now" button in empty state
+  - Click to trigger manual installation flow
+
+### Changed
+
+- **Breaking (Opt-out vs Opt-in)**: Auto-installation now **enabled by default**
+  - Old behavior: Users had to click a button
+  - New behavior: Installation happens automatically
+  - To disable: Set `tokensaver.autoInstall: false`
+  
+- Renamed setting: `autoInstallHooks` → `autoInstall` (clearer naming)
+- Installation is now silent with progress notification instead of dialog prompts
+- `installHooks()` automatically triggers TokViz installation if missing
+
+### Improved
+
+- **UX**: Reduced user friction from 1 click to 0 clicks
+- **Onboarding**: First-time experience is now completely seamless
+- **Error Handling**: Better messaging when auto-install fails
+- **Documentation**: README emphasizes zero-setup installation
+
+### Technical
+
+- Added `checkNpmInstalled()` function
+- Added `autoInstallTokviz()` function with progress notifications
+- Added `autoSetup()` function for complete one-click setup
+- Webview message handling for dashboard button clicks
+- Global state tracking for first-time welcome message
+
 ## [0.1.3] - 2026-06-10
 
 ### Fixed

@@ -1,435 +1,679 @@
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as child_process from "child_process";
+import {
+  detectActiveAgents,
+  detectClaudePresent,
+  type TokVizAgent,
+} from "./agentDetector";
 
-interface TokVizStats {
+/**
+ * TokenSaver — autonomous token-savings dashboard.
+ *
+ * TokViz compression runs via bundled CLI + hooks (zero user install).
+ * On startup we detect Copilot / Cursor / Gemini-Antigravity and silently
+ * run `tokviz init` for each. Stats read live from ~/.tokviz/events.json.
+ */
+
+interface TokVizEvent {
+  id: string;
+  sessionId: string;
+  agent: string;
+  timestamp: string;
+  source: string;
+  toolName: string;
+  tokensRaw: number;
+  tokensOptimized: number;
+  tokensSaved: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface AgentBreakdown {
+  agent: string;
   rawTokens: number;
   optimizedTokens: number;
   savedTokens: number;
   savingsPercent: number;
-  topSavings?: Array<{
-    command: string;
-    saved: number;
-    percent: number;
-  }>;
+  events: number;
 }
+
+interface TokenStats {
+  rawTokens: number;
+  optimizedTokens: number;
+  savedTokens: number;
+  savingsPercent: number;
+  events: number;
+  todaySaved: number;
+  byAgent: AgentBreakdown[];
+  hooks: HookStatus[];
+}
+
+interface HookStatus {
+  agent: string;
+  installed: boolean;
+}
+
+const TOKVIZ_DIR = path.join(os.homedir(), ".tokviz");
+const EVENTS_PATH = path.join(TOKVIZ_DIR, "events.json");
 
 let statusBarItem: vscode.StatusBarItem;
+let dashboardView: vscode.WebviewView | undefined;
+let fileWatcher: fs.FSWatcher | undefined;
+let refreshTimer: NodeJS.Timeout | undefined;
 
-function getTokvizPath(): string {
-  const config = vscode.workspace.getConfiguration("tokensaver");
-  return config.get<string>("tokvizPath") || "tokviz";
+// ---------------------------------------------------------------------------
+// Data layer — read & aggregate TokViz events directly from disk
+// ---------------------------------------------------------------------------
+
+function readEvents(): TokVizEvent[] {
+  try {
+    if (!fs.existsSync(EVENTS_PATH)) {
+      return [];
+    }
+    const raw = fs.readFileSync(EVENTS_PATH, "utf8");
+    if (!raw.trim()) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    const events = Array.isArray(parsed) ? parsed : parsed.events;
+    return Array.isArray(events) ? events : [];
+  } catch (error) {
+    console.error("TokenSaver: failed to read events.json", error);
+    return [];
+  }
 }
 
-function execTokviz(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const tokvizPath = getTokvizPath();
-    child_process.exec(
-      `${tokvizPath} ${args.join(" ")}`,
-      { maxBuffer: 1024 * 1024 * 10 },
-      (error, stdout, stderr) => {
+function isToday(timestamp: string): boolean {
+  const d = new Date(timestamp);
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
+function detectHooks(): HookStatus[] {
+  const checks: Array<{ agent: string; paths: string[] }> = [
+    {
+      agent: "cursor",
+      paths: [
+        path.join(os.homedir(), ".cursor", "hooks.json"),
+        path.join(TOKVIZ_DIR, "hooks", "cursor"),
+      ],
+    },
+    {
+      agent: "copilot",
+      paths: [
+        path.join(os.homedir(), ".copilot", "hooks", "tokviz-tracker.json"),
+        path.join(TOKVIZ_DIR, "hooks", "copilot"),
+      ],
+    },
+    {
+      agent: "gemini",
+      paths: [
+        path.join(os.homedir(), ".gemini", "hooks.json"),
+        path.join(TOKVIZ_DIR, "hooks", "gemini"),
+      ],
+    },
+  ];
+
+  return checks.map(({ agent, paths }) => ({
+    agent,
+    installed: paths.some((p) => {
+      try {
+        return fs.existsSync(p);
+      } catch {
+        return false;
+      }
+    }),
+  }));
+}
+
+function computeStats(): TokenStats {
+  const events = readEvents();
+
+  let rawTokens = 0;
+  let optimizedTokens = 0;
+  let savedTokens = 0;
+  let todaySaved = 0;
+
+  const agentMap = new Map<string, AgentBreakdown>();
+
+  for (const ev of events) {
+    const raw = ev.tokensRaw || 0;
+    const opt = ev.tokensOptimized || 0;
+    const saved = ev.tokensSaved || 0;
+
+    rawTokens += raw;
+    optimizedTokens += opt;
+    savedTokens += saved;
+
+    if (ev.timestamp && isToday(ev.timestamp)) {
+      todaySaved += saved;
+    }
+
+    const agent = ev.agent || "unknown";
+    const bucket =
+      agentMap.get(agent) ||
+      {
+        agent,
+        rawTokens: 0,
+        optimizedTokens: 0,
+        savedTokens: 0,
+        savingsPercent: 0,
+        events: 0,
+      };
+    bucket.rawTokens += raw;
+    bucket.optimizedTokens += opt;
+    bucket.savedTokens += saved;
+    bucket.events += 1;
+    agentMap.set(agent, bucket);
+  }
+
+  const byAgent = Array.from(agentMap.values())
+    .map((b) => ({
+      ...b,
+      savingsPercent: b.rawTokens > 0 ? (b.savedTokens / b.rawTokens) * 100 : 0,
+    }))
+    .sort((a, b) => b.savedTokens - a.savedTokens);
+
+  return {
+    rawTokens,
+    optimizedTokens,
+    savedTokens,
+    savingsPercent: rawTokens > 0 ? (savedTokens / rawTokens) * 100 : 0,
+    events: events.length,
+    todaySaved,
+    byAgent,
+    hooks: detectHooks(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// UI — status bar + dashboard, both fed from computeStats()
+// ---------------------------------------------------------------------------
+
+function updateStatusBar(stats: TokenStats): void {
+  const config = vscode.workspace.getConfiguration("tokensaver");
+  if (!config.get<boolean>("showStatusBar", true)) {
+    statusBarItem.hide();
+    return;
+  }
+
+  if (stats.savedTokens > 0) {
+    const savedK = (stats.savedTokens / 1000).toFixed(1);
+    statusBarItem.text = `$(zap) -${savedK}K tokens (${stats.savingsPercent.toFixed(0)}%)`;
+    statusBarItem.tooltip = `TokenSaver: ${stats.savedTokens.toLocaleString()} tokens saved · ${stats.events} events`;
+  } else {
+    const anyHooks = stats.hooks.some((h) => h.installed);
+    statusBarItem.text = "$(zap) TokenSaver";
+    statusBarItem.tooltip = anyHooks
+      ? "TokenSaver: tracking active — savings will appear as you work"
+      : "TokenSaver: click to enable token tracking";
+  }
+  statusBarItem.show();
+}
+
+function pushStatsToDashboard(stats: TokenStats): void {
+  if (dashboardView) {
+    dashboardView.webview.postMessage({ type: "stats", stats });
+  }
+}
+
+function refresh(): void {
+  const stats = computeStats();
+  updateStatusBar(stats);
+  pushStatsToDashboard(stats);
+}
+
+// ---------------------------------------------------------------------------
+// Live updates — watch events.json and refresh on change
+// ---------------------------------------------------------------------------
+
+function startWatching(context: vscode.ExtensionContext): void {
+  try {
+    if (!fs.existsSync(TOKVIZ_DIR)) {
+      return;
+    }
+    fileWatcher = fs.watch(TOKVIZ_DIR, (_event, filename) => {
+      if (!filename || filename === "events.json") {
+        // Debounce rapid successive writes.
+        if (refreshTimer) {
+          clearTimeout(refreshTimer);
+        }
+        refreshTimer = setTimeout(refresh, 300);
+      }
+    });
+  } catch (error) {
+    console.error("TokenSaver: failed to watch ~/.tokviz", error);
+  }
+
+  context.subscriptions.push({
+    dispose: () => {
+      fileWatcher?.close();
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Self-contained hook setup — installs the bundled TokViz CLI + agent hooks
+// ---------------------------------------------------------------------------
+
+let extensionPath = "";
+
+function bundledCliPath(): string {
+  return path.join(extensionPath, "bundled", "cli.bundle.mjs");
+}
+
+function bundledRepoRoot(): string {
+  return path.join(extensionPath, "bundled");
+}
+
+/** Point the installed hook scripts at the bundled CLI (no global install needed). */
+function writeCliPath(): void {
+  if (!extensionPath || !fs.existsSync(bundledCliPath())) {
+    return;
+  }
+  try {
+    fs.mkdirSync(TOKVIZ_DIR, { recursive: true });
+    fs.writeFileSync(path.join(TOKVIZ_DIR, "cli-path"), bundledCliPath(), "utf8");
+  } catch (error) {
+    console.error("TokenSaver: failed to write cli-path", error);
+  }
+}
+
+/**
+ * Runs the bundled CLI's `init` using VS Code's own Node runtime, so no global
+ * `tokviz` binary or npm install is required. TOKVIZ_REPO_ROOT points the CLI at
+ * the bundled hook scripts shipped inside the extension.
+ */
+function runBundledInit(agent: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const cli = bundledCliPath();
+    if (!fs.existsSync(cli)) {
+      resolve({ ok: false, error: "bundled CLI not found" });
+      return;
+    }
+    child_process.execFile(
+      process.execPath,
+      [cli, "init", "-g", "--agent", agent, "--enterprise"],
+      {
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: "1",
+          TOKVIZ_REPO_ROOT: bundledRepoRoot(),
+        },
+      },
+      (error, _stdout, stderr) => {
         if (error) {
-          reject(error);
+          resolve({ ok: false, error: stderr || error.message });
         } else {
-          resolve(stdout);
+          resolve({ ok: true });
         }
       }
     );
   });
 }
 
-async function checkTokvizInstalled(): Promise<boolean> {
-  try {
-    await execTokviz(["--version"]);
-    return true;
-  } catch {
+async function installTracking(
+  agent: string,
+  opts: { silent?: boolean } = {}
+): Promise<boolean> {
+  writeCliPath();
+  const result = await runBundledInit(agent);
+  refresh();
+
+  if (!result.ok) {
+    if (!opts.silent) {
+      vscode.window.showWarningMessage(
+        `TokenSaver: couldn't enable tracking for ${agent}. ${result.error ?? ""}`.trim()
+      );
+    }
     return false;
   }
-}
 
-async function promptInstallTokviz(): Promise<void> {
-  const choice = await vscode.window.showErrorMessage(
-    "TokViz CLI not found. TokenSaver requires TokViz to be installed.",
-    "Install Instructions",
-    "Cancel"
-  );
-
-  if (choice === "Install Instructions") {
-    vscode.env.openExternal(
-      vscode.Uri.parse("https://github.com/maazizit/tokviz#quick-start")
-    );
+  if (!opts.silent) {
+    vscode.window
+      .showInformationMessage(
+        `TokenSaver: tracking enabled for ${agent}. Reload the window to activate.`,
+        "Reload Window"
+      )
+      .then((choice) => {
+        if (choice === "Reload Window") {
+          vscode.commands.executeCommand("workbench.action.reloadWindow");
+        }
+      });
   }
+  return true;
 }
 
-async function installHooks(agent: "cursor" | "copilot" | "gemini" | "antigravity"): Promise<void> {
-  const installed = await checkTokvizInstalled();
-  if (!installed) {
-    await promptInstallTokviz();
+function installedAgentsKey(agent: TokVizAgent): string {
+  return `tokensaver.hooks.${agent}`;
+}
+
+async function enableTracking(): Promise<void> {
+  const detected = detectActiveAgents();
+  const items = detected.map((d) => ({
+    label: d.agent,
+    description: d.reason,
+    agent: d.agent as TokVizAgent,
+  }));
+  for (const extra of ["cursor", "copilot", "gemini"] as TokVizAgent[]) {
+    if (!items.some((i) => i.agent === extra)) {
+      items.push({ label: extra, description: "manual", agent: extra });
+    }
+  }
+
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: "Select agent to enable TokViz compression hooks",
+  });
+  if (!pick) {
     return;
   }
-
-  const config = vscode.workspace.getConfiguration("tokensaver");
-  const enterpriseMode = config.get<boolean>("enterpriseMode");
-
-  const args = ["init", "-g", "--agent", agent];
-  if (enterpriseMode) {
-    args.push("--enterprise");
-  }
-
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: `Installing TokViz compression hooks for ${agent}...`,
+      title: `Enabling compression for ${pick.agent}...`,
       cancellable: false,
     },
-    async () => {
-      try {
-        const output = await execTokviz(args);
-        vscode.window.showInformationMessage(
-          `✅ TokViz hooks installed for ${agent}. Please restart your IDE to activate compression.`,
-          "Restart Now"
-        ).then((choice) => {
-          if (choice === "Restart Now") {
-            vscode.commands.executeCommand("workbench.action.reloadWindow");
-          }
-        });
-      } catch (error) {
-        vscode.window.showErrorMessage(
-          `Failed to install TokViz hooks: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
+    () => installTracking(pick.agent)
   );
 }
 
-async function runDoctor(): Promise<void> {
-  const installed = await checkTokvizInstalled();
-  if (!installed) {
-    await promptInstallTokviz();
-    return;
+/**
+ * Silent background setup: detect agents (like TokGuess watchers) and install
+ * TokViz hooks for each that is not yet configured. No user action required.
+ */
+async function autoEnableDetectedAgents(
+  context: vscode.ExtensionContext
+): Promise<void> {
+  writeCliPath();
+
+  const hooks = detectHooks();
+  const targets = detectActiveAgents();
+  let installedAny = false;
+
+  for (const { agent, reason } of targets) {
+    const hook = hooks.find((h) => h.agent === agent);
+    const marked = context.globalState.get<boolean>(installedAgentsKey(agent));
+    if (hook?.installed && marked) {
+      continue;
+    }
+
+    console.log(`TokenSaver: auto-install TokViz hooks for ${agent} (${reason})`);
+    const ok = await installTracking(agent, { silent: true });
+    if (ok) {
+      await context.globalState.update(installedAgentsKey(agent), true);
+      installedAny = true;
+    }
   }
 
-  try {
-    const output = await execTokviz(["doctor"]);
-    const outputChannel = vscode.window.createOutputChannel("TokenSaver");
-    outputChannel.clear();
-    outputChannel.appendLine("=== TokViz Installation Check ===\n");
-    outputChannel.appendLine(output);
-    outputChannel.show();
+  if (installedAny) {
+    console.log("TokenSaver: TokViz hooks installed — reload IDE to activate");
+  }
 
-    if (output.includes("✓") || output.includes("OK")) {
-      vscode.window.showInformationMessage("✅ TokViz installation is healthy!");
-    } else {
-      vscode.window.showWarningMessage("⚠️ TokViz may have issues. Check output.");
-    }
-  } catch (error) {
-    vscode.window.showErrorMessage(
-      `Doctor check failed: ${error instanceof Error ? error.message : String(error)}`
+  if (detectClaudePresent()) {
+    console.log(
+      "TokenSaver: Claude detected — use TokGuess for usage; TokViz compression hooks not available yet"
     );
   }
 }
 
-async function getStats(): Promise<TokVizStats | null> {
-  const installed = await checkTokvizInstalled();
-  if (!installed) {
-    return null;
-  }
-
-  try {
-    const output = await execTokviz(["gain"]);
-    
-    // Parse TokViz gain output
-    const rawMatch = output.match(/Raw:\s*([\d,]+)\s*tokens/i);
-    const optimizedMatch = output.match(/Optimized:\s*([\d,]+)\s*tokens/i);
-    const savedMatch = output.match(/Saved:\s*([\d,]+)\s*tokens\s*\(([\d.]+)%\)/i);
-
-    if (rawMatch && optimizedMatch && savedMatch) {
-      return {
-        rawTokens: parseInt(rawMatch[1].replace(/,/g, "")),
-        optimizedTokens: parseInt(optimizedMatch[1].replace(/,/g, "")),
-        savedTokens: parseInt(savedMatch[1].replace(/,/g, "")),
-        savingsPercent: parseFloat(savedMatch[2]),
-      };
-    }
-  } catch (error) {
-    console.error("Failed to get TokViz stats:", error);
-  }
-
-  return null;
-}
-
-async function updateStatusBar(): Promise<void> {
-  const config = vscode.workspace.getConfiguration("tokensaver");
-  const showStatusBar = config.get<boolean>("showStatusBar");
-
-  if (!showStatusBar) {
-    statusBarItem.hide();
-    return;
-  }
-
-  const stats = await getStats();
-  if (stats && stats.savedTokens > 0) {
-    const savedK = (stats.savedTokens / 1000).toFixed(1);
-    statusBarItem.text = `💎 -${savedK}K tokens (${stats.savingsPercent.toFixed(0)}%)`;
-    statusBarItem.tooltip = `TokenSaver: ${stats.savedTokens.toLocaleString()} tokens saved today`;
-    statusBarItem.show();
-  } else {
-    statusBarItem.text = "💎 TokenSaver";
-    statusBarItem.tooltip = "Click to open dashboard";
-    statusBarItem.show();
-  }
-}
-
-async function showStats(): Promise<void> {
-  const installed = await checkTokvizInstalled();
-  if (!installed) {
-    await promptInstallTokviz();
-    return;
-  }
-
-  try {
-    const output = await execTokviz(["stats"]);
-    const outputChannel = vscode.window.createOutputChannel("TokenSaver Stats");
-    outputChannel.clear();
-    outputChannel.appendLine("=== TokViz Statistics ===\n");
-    outputChannel.appendLine(output);
-    outputChannel.show();
-  } catch (error) {
-    vscode.window.showErrorMessage(
-      `Failed to get stats: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-async function compareAgents(): Promise<void> {
-  const installed = await checkTokvizInstalled();
-  if (!installed) {
-    await promptInstallTokviz();
-    return;
-  }
-
-  try {
-    const output = await execTokviz(["compare", "--agents", "cursor,copilot", "--since", "7d"]);
-    const outputChannel = vscode.window.createOutputChannel("TokenSaver Compare");
-    outputChannel.clear();
-    outputChannel.appendLine("=== Agent Comparison ===\n");
-    outputChannel.appendLine(output);
-    outputChannel.show();
-  } catch (error) {
-    vscode.window.showErrorMessage(
-      `Failed to compare: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-function refreshDashboard(webview: vscode.Webview): void {
-  webview.html = getDashboardHtml();
-  getStats().then((stats) => {
-    if (stats) {
-      webview.postMessage({ type: "updateStats", stats });
-    } else {
-      webview.postMessage({ type: "noStats" });
-    }
-  });
-}
+// ---------------------------------------------------------------------------
+// Dashboard webview
+// ---------------------------------------------------------------------------
 
 class DashboardViewProvider implements vscode.WebviewViewProvider {
-  resolveWebviewView(
-    webviewView: vscode.WebviewView,
-    _context: vscode.WebviewViewResolveContext,
-    _token: vscode.CancellationToken
-  ): void {
+  resolveWebviewView(webviewView: vscode.WebviewView): void {
+    dashboardView = webviewView;
     webviewView.webview.options = { enableScripts: true };
-    refreshDashboard(webviewView.webview);
-  }
-}
+    webviewView.webview.html = getDashboardHtml();
 
-function createDashboardPanel(_context: vscode.ExtensionContext): void {
-  const panel = vscode.window.createWebviewPanel(
-    "tokensaverDashboard",
-    "TokenSaver Dashboard",
-    vscode.ViewColumn.One,
-    { enableScripts: true }
-  );
-  refreshDashboard(panel.webview);
+    webviewView.webview.onDidReceiveMessage((message) => {
+      if (message?.type === "enableTracking") {
+        vscode.commands.executeCommand("tokensaver.enableTracking");
+      } else if (message?.type === "ready") {
+        refresh();
+      }
+    });
+
+    webviewView.onDidDispose(() => {
+      if (dashboardView === webviewView) {
+        dashboardView = undefined;
+      }
+    });
+
+    refresh();
+  }
 }
 
 function getDashboardHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TokenSaver Dashboard</title>
-    <style>
-        body {
-            font-family: var(--vscode-font-family);
-            color: var(--vscode-foreground);
-            background: var(--vscode-editor-background);
-            padding: 20px;
-            margin: 0;
-        }
-        .header {
-            text-align: center;
-            padding: 30px 0;
-            border-bottom: 1px solid var(--vscode-panel-border);
-        }
-        .header h1 {
-            margin: 0;
-            font-size: 32px;
-            font-weight: 300;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }
-        .stat-card {
-            background: var(--vscode-input-background);
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 8px;
-            padding: 20px;
-            text-align: center;
-        }
-        .stat-value {
-            font-size: 36px;
-            font-weight: bold;
-            color: var(--vscode-charts-green);
-            margin: 10px 0;
-        }
-        .stat-label {
-            font-size: 14px;
-            color: var(--vscode-descriptionForeground);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .chart-container {
-            margin: 30px 0;
-            padding: 20px;
-            background: var(--vscode-input-background);
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 8px;
-        }
-        .progress-bar {
-            width: 100%;
-            height: 30px;
-            background: var(--vscode-input-background);
-            border-radius: 15px;
-            overflow: hidden;
-            margin: 20px 0;
-        }
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #4CAF50, #8BC34A);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 40px;
-            padding-top: 20px;
-            border-top: 1px solid var(--vscode-panel-border);
-            color: var(--vscode-descriptionForeground);
-            font-size: 12px;
-        }
-        .emoji {
-            font-size: 48px;
-            margin: 20px 0;
-        }
-        .empty-state {
-            text-align: center;
-            padding: 24px;
-            margin: 20px 0;
-            border: 1px dashed var(--vscode-panel-border);
-            border-radius: 8px;
-            color: var(--vscode-descriptionForeground);
-        }
-        .empty-state.hidden { display: none; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TokenSaver</title>
+<style>
+  body {
+    font-family: var(--vscode-font-family);
+    color: var(--vscode-foreground);
+    background: var(--vscode-editor-background);
+    padding: 16px;
+    margin: 0;
+  }
+  .header { text-align: center; padding: 18px 0 14px; }
+  .header .glyph { font-size: 40px; line-height: 1; }
+  .header h1 { margin: 8px 0 2px; font-size: 22px; font-weight: 300; }
+  .header p { margin: 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
+
+  .hero {
+    margin: 18px 0;
+    padding: 18px;
+    border-radius: 10px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-panel-border);
+    text-align: center;
+  }
+  .hero .big {
+    font-size: 40px;
+    font-weight: 700;
+    color: var(--vscode-charts-green);
+    line-height: 1.1;
+  }
+  .hero .sub { font-size: 12px; color: var(--vscode-descriptionForeground); margin-top: 4px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 14px 0;
+  }
+  .card {
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+  }
+  .card .label {
+    font-size: 10px;
+    letter-spacing: .6px;
+    text-transform: uppercase;
+    color: var(--vscode-descriptionForeground);
+  }
+  .card .value { font-size: 20px; font-weight: 600; margin-top: 6px; }
+
+  .bar-wrap { margin: 16px 0; }
+  .bar-wrap .caption { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
+  .bar {
+    height: 22px;
+    border-radius: 11px;
+    background: var(--vscode-input-background);
+    overflow: hidden;
+    border: 1px solid var(--vscode-panel-border);
+  }
+  .bar > span {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%;
+    background: linear-gradient(90deg, #2ea043, #56d364);
+    color: #fff; font-size: 11px; font-weight: 600;
+    transition: width .4s ease;
+    white-space: nowrap;
+  }
+
+  .agents { margin-top: 18px; }
+  .agents h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--vscode-descriptionForeground); margin: 0 0 8px; }
+  .agent-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 10px; border-radius: 6px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-panel-border);
+    margin-bottom: 6px; font-size: 12px;
+  }
+  .agent-row .name { text-transform: capitalize; font-weight: 600; }
+  .agent-row .meta { color: var(--vscode-descriptionForeground); }
+
+  .empty {
+    text-align: center; padding: 26px 18px; margin: 16px 0;
+    border: 1px dashed var(--vscode-panel-border); border-radius: 10px;
+    color: var(--vscode-descriptionForeground);
+  }
+  .empty.hidden, .content.hidden { display: none; }
+  .btn {
+    margin-top: 14px; padding: 9px 18px;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none; border-radius: 5px; font-size: 13px; cursor: pointer;
+  }
+  .btn:hover { background: var(--vscode-button-hoverBackground); }
+
+  .foot {
+    text-align: center; margin-top: 22px; padding-top: 12px;
+    border-top: 1px solid var(--vscode-panel-border);
+    font-size: 10px; color: var(--vscode-descriptionForeground);
+  }
+</style>
 </head>
 <body>
-    <div class="header">
-        <div class="emoji">💎</div>
-        <h1>TokenSaver Dashboard</h1>
-        <p>Powered by TokViz Compression</p>
+  <div class="header">
+    <div class="glyph">⚡</div>
+    <h1>TokenSaver</h1>
+    <p>Live token savings · updated automatically</p>
+  </div>
+
+  <div class="empty hidden" id="empty">
+    <h3>No tracking data yet</h3>
+    <p id="emptyMsg">Token tracking starts automatically once enabled for your agent.</p>
+    <button class="btn" id="enableBtn">Enable Tracking</button>
+  </div>
+
+  <div class="content hidden" id="content">
+    <div class="hero">
+      <div class="big" id="heroSaved">0</div>
+      <div class="sub">tokens saved · <span id="heroPercent">0%</span> compression</div>
     </div>
 
-    <div class="empty-state" id="emptyState">
-        <p>No savings data yet.</p>
-        <p>Install TokViz CLI, run <strong>TokenSaver: Install TokViz Compression</strong>, then use your AI agent in Agent mode.</p>
+    <div class="grid">
+      <div class="card"><div class="label">Today</div><div class="value" id="today">0</div></div>
+      <div class="card"><div class="label">Events</div><div class="value" id="events">0</div></div>
+      <div class="card"><div class="label">Raw</div><div class="value" id="raw">0</div></div>
+      <div class="card"><div class="label">Optimized</div><div class="value" id="opt">0</div></div>
     </div>
 
-    <div class="stats-grid">
-        <div class="stat-card">
-            <div class="stat-label">Tokens Saved</div>
-            <div class="stat-value" id="savedTokens">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Savings Rate</div>
-            <div class="stat-value" id="savingsPercent">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Raw Tokens</div>
-            <div class="stat-value" id="rawTokens">-</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Optimized</div>
-            <div class="stat-value" id="optimizedTokens">-</div>
-        </div>
+    <div class="bar-wrap">
+      <div class="caption">Compression efficiency</div>
+      <div class="bar"><span id="bar" style="width:0%">0%</span></div>
     </div>
 
-    <div class="chart-container">
-        <h3>Compression Efficiency</h3>
-        <div class="progress-bar">
-            <div class="progress-fill" id="progressBar" style="width: 0%">
-                0% saved
-            </div>
-        </div>
-    </div>
+    <div class="agents" id="agents"></div>
+  </div>
 
-    <div class="footer">
-        <p>📊 Stats from ~/.tokviz/events.json</p>
-        <p>Run commands in Agent mode (Cursor/Copilot) to see savings</p>
-    </div>
+  <div class="foot">Reads ~/.tokviz/events.json · 100% local</div>
 
-    <script>
-        const vscode = acquireVsCodeApi();
+<script>
+  const vscode = acquireVsCodeApi();
 
-        window.addEventListener('message', event => {
-            const message = event.data;
-            if (message.type === 'noStats') {
-                document.getElementById('emptyState')?.classList.remove('hidden');
-                return;
-            }
-            if (message.type === 'updateStats') {
-                document.getElementById('emptyState')?.classList.add('hidden');
-                const stats = message.stats;
-                document.getElementById('savedTokens').textContent = 
-                    (stats.savedTokens / 1000).toFixed(1) + 'K';
-                document.getElementById('savingsPercent').textContent = 
-                    stats.savingsPercent.toFixed(1) + '%';
-                document.getElementById('rawTokens').textContent = 
-                    (stats.rawTokens / 1000).toFixed(1) + 'K';
-                document.getElementById('optimizedTokens').textContent = 
-                    (stats.optimizedTokens / 1000).toFixed(1) + 'K';
-                
-                const progressBar = document.getElementById('progressBar');
-                progressBar.style.width = stats.savingsPercent + '%';
-                progressBar.textContent = stats.savingsPercent.toFixed(0) + '% saved';
-            }
-        });
-    </script>
+  function fmt(n) {
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  document.getElementById('enableBtn').addEventListener('click', () => {
+    vscode.postMessage({ type: 'enableTracking' });
+  });
+
+  window.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (msg.type !== 'stats') return;
+    const s = msg.stats;
+
+    const empty = document.getElementById('empty');
+    const content = document.getElementById('content');
+
+    if (!s.events || s.savedTokens <= 0) {
+      empty.classList.remove('hidden');
+      content.classList.add('hidden');
+      const anyHooks = (s.hooks || []).some(h => h.installed);
+      document.getElementById('emptyMsg').textContent = anyHooks
+        ? 'Compression active — savings appear as your agent runs shell commands.'
+        : 'Setting up TokViz compression in background… reload window if hooks just installed.';
+      document.getElementById('enableBtn').style.display = anyHooks ? 'none' : '';
+      return;
+    }
+
+    empty.classList.add('hidden');
+    content.classList.remove('hidden');
+
+    document.getElementById('heroSaved').textContent = fmt(s.savedTokens);
+    document.getElementById('heroPercent').textContent = s.savingsPercent.toFixed(1) + '%';
+    document.getElementById('today').textContent = fmt(s.todaySaved);
+    document.getElementById('events').textContent = fmt(s.events);
+    document.getElementById('raw').textContent = fmt(s.rawTokens);
+    document.getElementById('opt').textContent = fmt(s.optimizedTokens);
+
+    const bar = document.getElementById('bar');
+    const pct = Math.max(0, Math.min(100, s.savingsPercent));
+    bar.style.width = pct + '%';
+    bar.textContent = pct.toFixed(0) + '%';
+
+    const agents = document.getElementById('agents');
+    const rows = (s.byAgent || []).filter(a => a.events > 0);
+    if (rows.length) {
+      agents.innerHTML = '<h3>By agent</h3>' + rows.map(a =>
+        '<div class="agent-row"><span class="name">' + a.agent + '</span>' +
+        '<span class="meta">' + fmt(a.savedTokens) + ' saved · ' +
+        a.savingsPercent.toFixed(0) + '%</span></div>'
+      ).join('');
+    } else {
+      agents.innerHTML = '';
+    }
+  });
+
+  vscode.postMessage({ type: 'ready' });
+</script>
 </body>
 </html>`;
 }
 
+// ---------------------------------------------------------------------------
+// Activation
+// ---------------------------------------------------------------------------
+
 export function activate(context: vscode.ExtensionContext): void {
   console.log("TokenSaver extension activated");
 
-  // Create status bar item
+  extensionPath = context.extensionPath;
+  // Keep installed hooks pointed at this version's bundled CLI.
+  writeCliPath();
+
   statusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     100
@@ -437,33 +681,6 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBarItem.command = "tokensaver.showDashboard";
   context.subscriptions.push(statusBarItem);
 
-  // Check TokViz installation on startup
-  checkTokvizInstalled().then((installed) => {
-    if (!installed) {
-      const config = vscode.workspace.getConfiguration("tokensaver");
-      const autoInstall = config.get<boolean>("autoInstallHooks");
-      
-      if (!autoInstall) {
-        vscode.window
-          .showWarningMessage(
-            "TokViz CLI not found. Install it to enable token compression.",
-            "Install Instructions",
-            "Don't Show Again"
-          )
-          .then((choice) => {
-            if (choice === "Install Instructions") {
-              vscode.env.openExternal(
-                vscode.Uri.parse("https://github.com/maazizit/tokviz#quick-start")
-              );
-            }
-          });
-      }
-    } else {
-      updateStatusBar();
-    }
-  });
-
-  // Sidebar webview (package.json: tokensaver.dashboard)
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       "tokensaver.dashboard",
@@ -471,40 +688,45 @@ export function activate(context: vscode.ExtensionContext): void {
     )
   );
 
-  // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand("tokensaver.showDashboard", () => {
-      createDashboardPanel(context);
+      vscode.commands.executeCommand("tokensaver.dashboard.focus");
     }),
-
-    vscode.commands.registerCommand("tokensaver.installHooks", () => {
-      installHooks("cursor");
-    }),
-
-    vscode.commands.registerCommand("tokensaver.installHooksCopilot", () => {
-      installHooks("copilot");
-    }),
-
-    vscode.commands.registerCommand("tokensaver.installHooksAntigravity", () => {
-      installHooks("antigravity");
-    }),
-
-    vscode.commands.registerCommand("tokensaver.doctor", runDoctor),
-
-    vscode.commands.registerCommand("tokensaver.viewStats", showStats),
-
-    vscode.commands.registerCommand("tokensaver.compareAgents", compareAgents)
+    vscode.commands.registerCommand("tokensaver.enableTracking", enableTracking),
+    vscode.commands.registerCommand("tokensaver.refresh", refresh)
   );
 
-  // Update status bar every 30 seconds
-  setInterval(() => {
-    updateStatusBar();
-  }, 30000);
+  // React to relevant configuration changes.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("tokensaver")) {
+        refresh();
+      }
+    })
+  );
+
+  startWatching(context);
+
+  // Silent TokViz setup: detect Copilot / Cursor / Gemini-Antigravity, install hooks.
+  void autoEnableDetectedAgents(context);
+
+  // Re-check every 5 min in case user installs a new agent later.
+  const agentRecheck = setInterval(() => {
+    void autoEnableDetectedAgents(context);
+  }, 300_000);
+  context.subscriptions.push({ dispose: () => clearInterval(agentRecheck) });
+
+  // Lightweight periodic safety refresh (in case the watcher misses an event).
+  const interval = setInterval(refresh, 30000);
+  context.subscriptions.push({ dispose: () => clearInterval(interval) });
+
+  refresh();
 }
 
 export function deactivate(): void {
-  if (statusBarItem) {
-    statusBarItem.dispose();
+  fileWatcher?.close();
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
   }
+  statusBarItem?.dispose();
 }
-
