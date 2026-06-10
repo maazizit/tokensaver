@@ -69,7 +69,7 @@ When an agent runs `git diff`, `npm test`, or any shell command in **Agent mode*
 That's it. No commands, no npm, no TokViz install.
 
 ```bash
-code --install-extension tokensaver-0.3.0.vsix
+code --install-extension tokensaver-0.4.0.vsix
 ```
 
 ### Manual re-enable (optional)

@@ -5,6 +5,20 @@ All notable changes to the "TokenSaver" extension will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-11
+
+### Added
+
+- New mascot logo — cat calculating tokens (icon, dashboard, sidebar SVG)
+- Market benchmark doc (`docs/MARKET-BENCHMARK.md`) — competitive study vs Eating Token, TokenLens AI, RTK, Caveman
+- Marketplace description clarifying zero-setup bundled TokViz and difference from TokGuess
+
+### Changed
+
+- Version bump for first marketplace-ready release of the bundled TokViz stack
+- Dashboard header shows mascot image instead of lightning emoji
+- README intro and install instructions aligned with v0.4.0
+
 ## [0.3.0] - 2026-06-11
 
 ### ✨ Added

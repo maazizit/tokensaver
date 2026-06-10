@@ -7,3 +7,13 @@ tsconfig.json
 **/*.map
 **/*.ts
 node_modules/**
+*.vsix
+wayfind-*.vsix
+AUTO-INSTALL-FEATURE.md
+TRANSFORMATION-COMPLETE.md
+RELEASE-*.md
+PUBLISH-GUIDE.md
+QUICKSTART.md
+docs/**
+media/logo.png
+media/icon-256.png

@@ -2,10 +2,14 @@
   "name": "tokensaver",
   "displayName": "TokenSaver",
   "description": "Compress AI shell output automatically — no TokViz install needed. Bundles TokViz, detects Cursor/Copilot/Gemini-Antigravity, installs hooks silently. Dashboard shows tokens saved. Unlike TokGuess (usage tracking), this actually reduces context sent to your agent.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "maazizit",
   "license": "MIT",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#2ea043",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/maazizit/tokensaver"
@@ -25,7 +29,11 @@
     "compression",
     "tokviz",
     "cost-optimization",
-    "context"
+    "context",
+    "antigravity",
+    "gemini",
+    "token-savings",
+    "shell-compression"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -96,6 +104,7 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
     "typescript": "^5.4.0"
   }
 }
