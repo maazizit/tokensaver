@@ -8,6 +8,12 @@ import {
   detectClaudePresent,
   type TokVizAgent,
 } from "./agentDetector";
+import {
+  calculateCompressionSnapshot,
+  calculateProjections,
+  type CompressionSnapshot,
+  type TimeProjection,
+} from "./calculator";
 
 /**
  * TokenSaver — autonomous token-savings dashboard.
@@ -48,6 +54,9 @@ interface TokenStats {
   todaySaved: number;
   byAgent: AgentBreakdown[];
   hooks: HookStatus[];
+  projections: TimeProjection;
+  todayCompression: CompressionSnapshot;
+  totalCompression: CompressionSnapshot;
 }
 
 interface HookStatus {
@@ -180,6 +189,17 @@ function computeStats(): TokenStats {
     }))
     .sort((a, b) => b.savedTokens - a.savedTokens);
 
+  const projectionEvents = events.map((ev) => ({
+    timestamp: ev.timestamp,
+    tokensSaved: ev.tokensSaved,
+    tokensRaw: ev.tokensRaw,
+    tokensOptimized: ev.tokensOptimized,
+  }));
+
+  const projections = calculateProjections(projectionEvents);
+  const todayCompression = calculateCompressionSnapshot(projectionEvents, true);
+  const totalCompression = calculateCompressionSnapshot(projectionEvents, false);
+
   return {
     rawTokens,
     optimizedTokens,
@@ -189,6 +209,9 @@ function computeStats(): TokenStats {
     todaySaved,
     byAgent,
     hooks: detectHooks(),
+    projections,
+    todayCompression,
+    totalCompression,
   };
 }
 
@@ -569,6 +592,121 @@ function getDashboardHtml(catSrc: string): string {
     border-top: 1px solid var(--vscode-panel-border);
     font-size: 10px; color: var(--vscode-descriptionForeground);
   }
+
+  .projections-section {
+    margin-top: 18px;
+    padding: 14px;
+    background: var(--vscode-input-background);
+    border-radius: 10px;
+    border: 1px solid var(--vscode-panel-border);
+  }
+  .projections-section .section-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    color: var(--vscode-descriptionForeground);
+    margin: 0 0 4px;
+  }
+  .section-subtitle {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin: 0 0 12px;
+  }
+  .projections-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+  }
+  .projection-card {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+    transition: border-color .2s ease, background .2s ease;
+  }
+  .projection-card:hover {
+    border-color: var(--vscode-charts-green);
+    background: color-mix(in srgb, var(--vscode-charts-green) 8%, var(--vscode-editor-background));
+  }
+  .projection-card.highlight {
+    border-color: var(--vscode-charts-green);
+    background: color-mix(in srgb, var(--vscode-charts-green) 12%, var(--vscode-editor-background));
+  }
+  .projection-label {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 6px;
+  }
+  .projection-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--vscode-charts-green);
+    margin-bottom: 2px;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .projection-unit {
+    font-size: 9px;
+    color: var(--vscode-descriptionForeground);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+
+  .verify-section {
+    margin-top: 14px;
+    padding: 14px;
+    border-radius: 10px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-panel-border);
+  }
+  .verify-section h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    color: var(--vscode-descriptionForeground);
+    margin: 0 0 10px;
+  }
+  .verify-flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .verify-box {
+    flex: 1 1 120px;
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+  }
+  .verify-box.opt { border-color: var(--vscode-charts-green); }
+  .verify-label {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 4px;
+  }
+  .verify-value {
+    font-size: 17px;
+    font-weight: 700;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .verify-box.opt .verify-value { color: var(--vscode-charts-green); }
+  .verify-arrow {
+    font-size: 18px;
+    color: var(--vscode-descriptionForeground);
+    font-weight: 600;
+  }
+  .verify-summary {
+    margin-top: 10px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+  }
+  .verify-summary.active { color: var(--vscode-charts-green); }
+  .verify-summary.none { color: var(--vscode-editorWarning-foreground, #cca700); }
 </style>
 </head>
 <body>
@@ -593,13 +731,56 @@ function getDashboardHtml(catSrc: string): string {
     <div class="grid">
       <div class="card"><div class="label">Today</div><div class="value" id="today">0</div></div>
       <div class="card"><div class="label">Events</div><div class="value" id="events">0</div></div>
-      <div class="card"><div class="label">Raw</div><div class="value" id="raw">0</div></div>
-      <div class="card"><div class="label">Optimized</div><div class="value" id="opt">0</div></div>
+      <div class="card"><div class="label">Raw (before)</div><div class="value" id="raw">0</div></div>
+      <div class="card"><div class="label">Optimized (after)</div><div class="value" id="opt">0</div></div>
+    </div>
+
+    <div class="verify-section">
+      <h3>Today — compression check</h3>
+      <div class="verify-flow">
+        <div class="verify-box">
+          <div class="verify-label">Raw tokens</div>
+          <div class="verify-value" id="todayRaw">0</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-box opt">
+          <div class="verify-label">After compression</div>
+          <div class="verify-value" id="todayOpt">0</div>
+        </div>
+      </div>
+      <div class="verify-summary" id="todayVerify">No events today yet.</div>
     </div>
 
     <div class="bar-wrap">
       <div class="caption">Compression efficiency</div>
       <div class="bar"><span id="bar" style="width:0%">0%</span></div>
+    </div>
+
+    <div class="projections-section">
+      <h3 class="section-title">Projections</h3>
+      <p class="section-subtitle">At today's pace, you'll save...</p>
+      <div class="projections-grid">
+        <div class="projection-card">
+          <div class="projection-label">Per day</div>
+          <div class="projection-value" id="projDaily">0</div>
+          <div class="projection-unit">tokens</div>
+        </div>
+        <div class="projection-card">
+          <div class="projection-label">Per week</div>
+          <div class="projection-value" id="projWeekly">0</div>
+          <div class="projection-unit">tokens</div>
+        </div>
+        <div class="projection-card">
+          <div class="projection-label">Per month</div>
+          <div class="projection-value" id="projMonthly">0</div>
+          <div class="projection-unit">tokens</div>
+        </div>
+        <div class="projection-card highlight">
+          <div class="projection-label">Monthly savings</div>
+          <div class="projection-value" id="projCost">$0.00</div>
+          <div class="projection-unit">per month</div>
+        </div>
+      </div>
     </div>
 
     <div class="agents" id="agents"></div>
@@ -613,6 +794,16 @@ function getDashboardHtml(catSrc: string): string {
   function fmt(n) {
     if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
     return String(n);
+  }
+
+  function fmtTokens(n) {
+    return Number(n || 0).toLocaleString('en-US');
+  }
+
+  function fmtUsd(amount) {
+    const n = Number(amount || 0);
+    if (n > 0 && n < 0.01) return '$0.01';
+    return '$' + n.toFixed(2);
   }
 
   document.getElementById('enableBtn').addEventListener('click', () => {
@@ -645,13 +836,37 @@ function getDashboardHtml(catSrc: string): string {
     document.getElementById('heroPercent').textContent = s.savingsPercent.toFixed(1) + '%';
     document.getElementById('today').textContent = fmt(s.todaySaved);
     document.getElementById('events').textContent = fmt(s.events);
-    document.getElementById('raw').textContent = fmt(s.rawTokens);
-    document.getElementById('opt').textContent = fmt(s.optimizedTokens);
+
+    const total = s.totalCompression || {};
+    document.getElementById('raw').textContent = fmtTokens(total.rawTokens);
+    document.getElementById('opt').textContent = fmtTokens(total.optimizedTokens);
+
+    const today = s.todayCompression || {};
+    document.getElementById('todayRaw').textContent = fmtTokens(today.rawTokens);
+    document.getElementById('todayOpt').textContent = fmtTokens(today.optimizedTokens);
+    const verify = document.getElementById('todayVerify');
+    if (!today.events) {
+      verify.textContent = 'No events today yet.';
+      verify.className = 'verify-summary';
+    } else if (today.savedTokens > 0) {
+      verify.textContent = fmtTokens(today.savedTokens) + ' saved today · ' +
+        today.compressionPercent.toFixed(1) + '% compression · ' + today.events + ' events';
+      verify.className = 'verify-summary active';
+    } else {
+      verify.textContent = 'No compression today — raw equals optimized (' + today.events + ' events)';
+      verify.className = 'verify-summary none';
+    }
 
     const bar = document.getElementById('bar');
     const pct = Math.max(0, Math.min(100, s.savingsPercent));
     bar.style.width = pct + '%';
     bar.textContent = pct.toFixed(0) + '%';
+
+    const p = s.projections || {};
+    document.getElementById('projDaily').textContent = fmtTokens(p.dailyTokens);
+    document.getElementById('projWeekly').textContent = fmtTokens(p.weeklyTokens);
+    document.getElementById('projMonthly').textContent = fmtTokens(p.monthlyTokens);
+    document.getElementById('projCost').textContent = fmtUsd(p.monthlyCostSavedUSD);
 
     const agents = document.getElementById('agents');
     const rows = (s.byAgent || []).filter(a => a.events > 0);

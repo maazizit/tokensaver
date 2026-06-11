@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 // src/index.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 
 // src/commands/init.ts
-import { cpSync, existsSync as existsSync3, mkdirSync as mkdirSync3 } from "node:fs";
-import { join as join4 } from "node:path";
+import { cpSync, existsSync as existsSync4, mkdirSync as mkdirSync3 } from "node:fs";
+import { join as join5 } from "node:path";
 
 // ../core/dist/types.js
 var DEFAULT_CONFIG = {
@@ -174,71 +174,322 @@ function getGlobalStats() {
   return getGlobalStatsForEvents(getAllEvents());
 }
 
-// ../core/dist/compressor/shell.js
-var MAX_LINES = 80;
-var MAX_DIFF_LINES = 120;
+// ../core/dist/noise.js
+var ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+var OSC_RE = /\x1b\][^\x07]*\x07/g;
+var CARRIAGE_RE = /\r/g;
+var PROGRESS_RE = /\[[#=>.\s-]{3,}\]\s*\d+%?/g;
+var TIMESTAMP_RE = /(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?|\b\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s*/g;
+var LOG_LEVEL_RE = /^\[?(?:DEBUG|INFO|WARN|WARNING|ERROR|TRACE)\]?\s*:?\s*/gm;
+var SPINNER_RE = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+/gm;
+function removeNoise(text) {
+  return text.replace(OSC_RE, "").replace(ANSI_RE, "").replace(CARRIAGE_RE, "").replace(PROGRESS_RE, "").replace(SPINNER_RE, "").split("\n").map((line) => line.replace(TIMESTAMP_RE, "").replace(LOG_LEVEL_RE, "").trimEnd()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+function dedupeLines(text, minRepeats) {
+  const lines = text.split("\n");
+  const result = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    let count = 1;
+    while (i + count < lines.length && lines[i + count] === line) {
+      count++;
+    }
+    if (count >= minRepeats && line.trim() !== "") {
+      result.push(line);
+      result.push(`[tokviz] \u2026 ${count - 1} duplicate lines omitted`);
+    } else {
+      for (let j = 0; j < count; j++)
+        result.push(line);
+    }
+    i += count;
+  }
+  return result.join("\n");
+}
 function truncateLines(text, max) {
   const lines = text.split("\n");
   if (lines.length <= max)
     return text;
   const kept = lines.slice(0, max);
-  kept.push(`
-[tokviz] \u2026 ${lines.length - max} lines truncated`);
+  kept.push(`[tokviz] \u2026 ${lines.length - max} lines truncated`);
   return kept.join("\n");
 }
-function compressGitStatus(output) {
-  const lines = output.split("\n");
-  const important = lines.filter((l) => l.startsWith("On branch") || l.startsWith("Changes") || l.startsWith("modified:") || l.startsWith("new file:") || l.startsWith("deleted:") || l.startsWith("Untracked") || l.trim() === "");
-  const untrackedIdx = important.findIndex((l) => l.startsWith("Untracked"));
-  if (untrackedIdx >= 0) {
-    const before = important.slice(0, untrackedIdx + 1);
-    const untracked = important.slice(untrackedIdx + 1).filter((l) => l.trim());
-    if (untracked.length > 10) {
-      before.push(`  \u2026 ${untracked.length} untracked files (tokviz summary)`);
-      return before.join("\n");
+
+// ../core/dist/compressors.js
+var MAX_GENERIC_LINES = 80;
+var MAX_LIST_LINES = 40;
+var MAX_DIFF_LINES = 120;
+var COMPRESSOR_ORDER = [
+  "docker logs",
+  "docker ps",
+  "kubectl get",
+  "git diff",
+  "git status",
+  "git log",
+  "cargo test",
+  "pnpm test",
+  "npm test",
+  "pytest",
+  "vitest",
+  "jest",
+  "rg",
+  "grep",
+  "find",
+  "ls"
+];
+function parseGrepLine(line) {
+  const match = line.match(/^(.+?):(\d+):(.*)$/);
+  if (match)
+    return { file: match[1], body: `${match[2]}:${match[3]}` };
+  return { file: line, body: "" };
+}
+function compressGrepLike(output) {
+  const lines = output.split("\n").filter((l) => l.trim()).map((l) => l.replace(/\s+/g, " ").trim());
+  const byFile = /* @__PURE__ */ new Map();
+  for (const line of lines) {
+    const { file } = parseGrepLine(line);
+    const group = byFile.get(file) ?? [];
+    group.push(line);
+    byFile.set(file, group);
+  }
+  const result = [];
+  for (const [file, matches] of [...byFile.entries()].sort()) {
+    if (matches.length > 2) {
+      result.push(`${file}: (${matches.length} matches)`);
+      result.push(matches[0], matches[1]);
+    } else {
+      result.push(...matches);
     }
   }
-  return important.join("\n") || output;
-}
-function compressGitDiff(output) {
-  return truncateLines(output, MAX_DIFF_LINES);
-}
-function compressGitLog(output) {
-  return truncateLines(output, 30);
+  return truncateLines(result.join("\n"), 25);
 }
 function compressTestOutput(output) {
   const lines = output.split("\n");
-  const errors = lines.filter((l) => /FAIL|ERROR|error:|failed|AssertionError/i.test(l) || l.trim().startsWith("E ") || l.includes("\u2717") || l.includes("\u2718"));
-  const summary = lines.filter((l) => /passed|failed|tests?/i.test(l)).slice(-5);
-  if (errors.length === 0 && summary.length > 0) {
-    return `[tokviz] test summary
-${summary.join("\n")}`;
+  const failures = lines.filter((l) => /FAILED|FAIL |ERROR|error:|AssertionError|✗|✘/i.test(l) || l.trim().startsWith("E ") || l.includes("\u25CF"));
+  const summary = lines.filter((l) => /test result|failures:|passed|failed|Tests:|Test Suites:|Snapshots:/i.test(l));
+  if (failures.length === 0) {
+    return summary.slice(-5).join("\n");
   }
-  if (errors.length > 0) {
-    const body = truncateLines(errors.join("\n"), 40);
-    return `[tokviz] errors only
-${body}`;
-  }
-  return truncateLines(output, MAX_LINES);
+  return truncateLines([...failures, ...summary.slice(-3)].join("\n"), 60);
 }
+function isGitStatusFileLine(line) {
+  const t = line.trim();
+  if (!t || t.startsWith("(use "))
+    return false;
+  if (/^(modified|new file|deleted):/.test(t))
+    return true;
+  if (/^[ MADRCU?!]{2} /.test(line))
+    return true;
+  if (/^\?\? /.test(line))
+    return true;
+  return false;
+}
+function compressGitStatus(output) {
+  const lines = output.split("\n");
+  const branch = lines.find((l) => l.startsWith("On branch") || /^\* \S/.test(l.trimStart()));
+  const files = lines.filter(isGitStatusFileLine);
+  const untracked = files.filter((l) => l.startsWith("??"));
+  const tracked = files.filter((l) => !l.startsWith("??"));
+  const result = [];
+  if (branch)
+    result.push(branch.trim());
+  if (tracked.length > 3) {
+    result.push(...tracked.slice(0, 2));
+    result.push(`\u2026 ${tracked.length - 2} more tracked files (tokviz summary)`);
+  } else {
+    result.push(...tracked);
+  }
+  if (untracked.length > 3) {
+    result.push(`Untracked: \u2026 ${untracked.length} files (tokviz summary)`);
+  } else {
+    result.push(...untracked);
+  }
+  return result.join("\n") || output;
+}
+function isCustomGitDiff(output) {
+  return output.includes("--- Changes ---");
+}
+function compressCustomGitDiff(output) {
+  const lines = output.split("\n");
+  const result = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    if (/^\d+ files? changed/.test(line.trim())) {
+      i++;
+      continue;
+    }
+    if (line.includes("|") && /\|\s*\d+\s*[\-+]+/.test(line)) {
+      i++;
+      continue;
+    }
+    if (line.startsWith("--- Changes ---")) {
+      result.push(line);
+      i++;
+      continue;
+    }
+    if (trimmed.startsWith("@@")) {
+      result.push(trimmed);
+      i++;
+      continue;
+    }
+    if (trimmed.startsWith("+")) {
+      const block = [];
+      while (i < lines.length && lines[i].trimStart().startsWith("+")) {
+        block.push(lines[i].trimStart());
+        i++;
+      }
+      if (block.length > 5) {
+        result.push(block[0], block[1]);
+        result.push(`[tokviz] \u2026 ${block.length - 2} additions omitted`);
+      } else {
+        result.push(...block);
+      }
+      continue;
+    }
+    if (trimmed.startsWith("-")) {
+      const block = [];
+      while (i < lines.length && lines[i].trimStart().startsWith("-")) {
+        block.push(lines[i].trimStart());
+        i++;
+      }
+      if (block.length > 4) {
+        result.push(block[0], block[1]);
+        result.push(`[tokviz] \u2026 ${block.length - 2} deletions omitted`);
+      } else {
+        result.push(...block);
+      }
+      continue;
+    }
+    if (/^\+\d+ -\d+$/.test(trimmed)) {
+      result.push(trimmed);
+      i++;
+      continue;
+    }
+    if (!line.startsWith(" ") && line.includes("/") && !line.includes("|")) {
+      result.push(line.trim());
+    }
+    i++;
+  }
+  return truncateLines(result.join("\n"), MAX_DIFF_LINES);
+}
+function compressUnifiedGitDiff(output) {
+  const lines = output.split("\n");
+  const result = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("diff --git") || trimmed.startsWith("@@")) {
+      result.push(trimmed);
+      i++;
+      continue;
+    }
+    if (trimmed.startsWith("index ") || trimmed.startsWith("--- ") || trimmed.startsWith("+++ ")) {
+      i++;
+      continue;
+    }
+    if (trimmed.startsWith("+")) {
+      const block = [];
+      while (i < lines.length && lines[i].trimStart().startsWith("+")) {
+        block.push(lines[i].trimStart());
+        i++;
+      }
+      if (block.length > 5) {
+        result.push(block[0], block[1]);
+        result.push(`[tokviz] \u2026 ${block.length - 2} additions omitted`);
+      } else {
+        result.push(...block);
+      }
+      continue;
+    }
+    if (trimmed.startsWith("-")) {
+      const block = [];
+      while (i < lines.length && lines[i].trimStart().startsWith("-")) {
+        block.push(lines[i].trimStart());
+        i++;
+      }
+      if (block.length > 4) {
+        result.push(block[0], block[1]);
+        result.push(`[tokviz] \u2026 ${block.length - 2} deletions omitted`);
+      } else {
+        result.push(...block);
+      }
+      continue;
+    }
+    i++;
+  }
+  return truncateLines(result.join("\n"), MAX_DIFF_LINES);
+}
+function compressGitDiff(output) {
+  if (isCustomGitDiff(output))
+    return compressCustomGitDiff(output);
+  return compressUnifiedGitDiff(output);
+}
+var compressors = {
+  "git diff": compressGitDiff,
+  "cargo test": compressTestOutput,
+  "npm test": compressTestOutput,
+  "pnpm test": compressTestOutput,
+  pytest: compressTestOutput,
+  vitest: compressTestOutput,
+  jest: compressTestOutput,
+  "docker logs": (output) => {
+    return output.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z /g, "").replace(/^[a-f0-9]{12} /gm, "").replace(/^\[?(DEBUG|INFO|WARN|WARNING|ERROR)\]? ?/gm, "").replace(/\d+ms\b/g, "Nms").trim();
+  },
+  grep: compressGrepLike,
+  rg: compressGrepLike,
+  "git status": compressGitStatus,
+  "git log": (output) => {
+    const lines = output.split("\n");
+    const oneline = lines.every((l) => !l.trim() || /^[a-f0-9]{7,}\s/.test(l.trim()));
+    if (oneline) {
+      return truncateLines(lines.filter((l) => l.trim()).join("\n"), 20);
+    }
+    return truncateLines(lines.filter((l) => l.startsWith("commit ") || l.startsWith("Author:") || l.trim() !== "" && !l.startsWith("Date:") && !l.startsWith("CommitDate:") && !l.startsWith("Merge:")).join("\n"), 30);
+  },
+  ls: (output) => truncateLines(output, MAX_LIST_LINES),
+  find: (output) => truncateLines(output, MAX_LIST_LINES),
+  "docker ps": (output) => truncateLines(output, 25),
+  "kubectl get": (output) => truncateLines(output, 12)
+};
+function detectCommandType(cmd) {
+  const lower = cmd.toLowerCase();
+  for (const name of COMPRESSOR_ORDER) {
+    if (lower.includes(name))
+      return name;
+  }
+  return "generic";
+}
+function smartCompress(cmd, output) {
+  if (!output.trim())
+    return output;
+  const type = detectCommandType(cmd);
+  let compressed = output;
+  if (type !== "generic") {
+    compressed = compressors[type](compressed);
+  } else {
+    compressed = truncateLines(compressed, MAX_GENERIC_LINES);
+  }
+  compressed = removeNoise(compressed);
+  compressed = dedupeLines(compressed, 3);
+  if (!compressed.trim())
+    return output;
+  return compressed;
+}
+
+// ../core/dist/compressor/shell.js
 function compressShellOutput(command, output) {
   const tokensRaw = estimateTokens(output);
   if (!output.trim()) {
     return { output, tokensRaw, tokensOptimized: tokensRaw, compressed: false };
   }
-  const cmd = command.trim().toLowerCase();
-  let compressed = output;
-  if (/\bgit\s+status\b/.test(cmd)) {
-    compressed = compressGitStatus(output);
-  } else if (/\bgit\s+diff\b/.test(cmd)) {
-    compressed = compressGitDiff(output);
-  } else if (/\bgit\s+log\b/.test(cmd)) {
-    compressed = compressGitLog(output);
-  } else if (/\b(pytest|cargo test|npm test|pnpm test|jest|vitest)\b/.test(cmd)) {
-    compressed = compressTestOutput(output);
-  } else if (/\b(grep|rg|find|ls|docker ps|kubectl get)\b/.test(cmd)) {
-    compressed = truncateLines(output, MAX_LINES);
-  }
+  const compressed = smartCompress(command, output);
   const tokensOptimized = estimateTokens(compressed);
   const didCompress = compressed !== output && tokensOptimized < tokensRaw;
   return {
@@ -821,31 +1072,146 @@ function formatCompareJson(result) {
   return JSON.stringify(result, null, 2);
 }
 
+// ../core/dist/bench.js
+import { readFileSync as readFileSync2, existsSync as existsSync2, readdirSync } from "node:fs";
+import { dirname, join as join2 } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
+var DEFAULT_TARGET = 60;
+function defaultFixturesDir() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join2(here, "..", "fixtures", "shell");
+}
+function loadFixtures(fixturesDir = defaultFixturesDir()) {
+  const manifestPath = join2(fixturesDir, "manifest.json");
+  if (!existsSync2(manifestPath)) {
+    throw new Error(`Missing benchmark manifest: ${manifestPath}`);
+  }
+  const manifest = JSON.parse(readFileSync2(manifestPath, "utf8"));
+  return manifest.map((entry) => ({
+    name: entry.name,
+    command: entry.command,
+    output: readFileSync2(join2(fixturesDir, entry.file), "utf8")
+  }));
+}
+function benchFixture(fixture, targetPercent = DEFAULT_TARGET) {
+  const compressed = smartCompress(fixture.command, fixture.output);
+  const tokensRaw = estimateTokens(fixture.output);
+  const tokensOut = estimateTokens(compressed);
+  const savingsPercent = tokensRaw > 0 ? Math.round((tokensRaw - tokensOut) / tokensRaw * 100) : 0;
+  return {
+    name: fixture.name,
+    command: fixture.command,
+    charsRaw: fixture.output.length,
+    charsOut: compressed.length,
+    tokensRaw,
+    tokensOut,
+    savingsPercent,
+    pass: savingsPercent >= targetPercent || tokensRaw < 50
+  };
+}
+function runBenchmark(fixtures, targetPercent = DEFAULT_TARGET) {
+  const rows = fixtures.map((f) => benchFixture(f, targetPercent));
+  const totalTokensRaw = rows.reduce((sum, r) => sum + r.tokensRaw, 0);
+  const totalTokensOut = rows.reduce((sum, r) => sum + r.tokensOut, 0);
+  const totalSavingsPercent = totalTokensRaw > 0 ? Math.round((totalTokensRaw - totalTokensOut) / totalTokensRaw * 100) : 0;
+  const meaningful = rows.filter((r) => r.tokensRaw >= 50);
+  const pass = totalSavingsPercent >= targetPercent && meaningful.every((r) => r.pass || r.savingsPercent >= targetPercent * 0.5);
+  return {
+    rows,
+    totalTokensRaw,
+    totalTokensOut,
+    totalSavingsPercent,
+    targetPercent,
+    pass
+  };
+}
+function captureLiveFixtures(repoPath) {
+  const captures = [
+    { name: "live-git-status", command: "git status", shell: "git status" },
+    { name: "live-git-log", command: "git log", shell: "git log --oneline -20" },
+    { name: "live-git-diff", command: "git diff", shell: "git diff" },
+    {
+      name: "live-npm-test",
+      command: "npm test",
+      shell: "npm test 2>&1",
+      cwd: join2(repoPath, "packages", "core")
+    }
+  ];
+  const results = [];
+  for (const cap of captures) {
+    try {
+      const output = execSync(cap.shell, {
+        cwd: cap.cwd ?? repoPath,
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      if (output.trim()) {
+        results.push({ name: cap.name, command: cap.command, output });
+      }
+    } catch (err) {
+      const e = err;
+      const output = `${e.stdout ?? ""}${e.stderr ?? ""}`.trim();
+      if (output) {
+        results.push({ name: cap.name, command: cap.command, output });
+      }
+    }
+  }
+  return results;
+}
+function formatBenchReport(report) {
+  const lines = [
+    "TokViz \u2014 Compression Benchmark",
+    "\u2500".repeat(72),
+    `${"Fixture".padEnd(22)} ${"Cmd".padEnd(14)} ${"Raw".padStart(6)} ${"Out".padStart(6)} ${"Save%".padStart(6)}`,
+    "\u2500".repeat(72)
+  ];
+  for (const row of report.rows) {
+    const mark = row.pass ? "\u2713" : "\u2717";
+    lines.push(`${mark} ${row.name.padEnd(20)} ${row.command.slice(0, 12).padEnd(14)} ${String(row.tokensRaw).padStart(6)} ${String(row.tokensOut).padStart(6)} ${String(row.savingsPercent).padStart(5)}%`);
+  }
+  lines.push("\u2500".repeat(72));
+  lines.push(`TOTAL${" ".repeat(37)} ${String(report.totalTokensRaw).padStart(6)} ${String(report.totalTokensOut).padStart(6)} ${String(report.totalSavingsPercent).padStart(5)}%`);
+  lines.push("");
+  const globalOk = report.totalSavingsPercent >= report.targetPercent;
+  lines.push(report.pass ? `PASS \u2014 global ${report.totalSavingsPercent}% (target ${report.targetPercent}%)` : globalOk ? `FAIL \u2014 global ${report.totalSavingsPercent}% OK but some fixtures below target` : `FAIL \u2014 global ${report.totalSavingsPercent}% < target ${report.targetPercent}%`);
+  const failed = report.rows.filter((r) => !r.pass && r.tokensRaw >= 50);
+  if (failed.length > 0) {
+    lines.push("");
+    lines.push("Below target:");
+    for (const row of failed) {
+      lines.push(`  ${row.name} (${row.savingsPercent}%)`);
+    }
+  }
+  return lines.join("\n");
+}
+
 // src/hooks-merge.ts
 import {
-  readFileSync as readFileSync2,
+  readFileSync as readFileSync3,
   writeFileSync as writeFileSync2,
   mkdirSync as mkdirSync2,
   copyFileSync,
-  existsSync as existsSync2,
+  existsSync as existsSync3,
   chmodSync
 } from "node:fs";
-import { dirname as dirname2, join as join3 } from "node:path";
+import { dirname as dirname3, join as join4 } from "node:path";
 
 // src/paths.ts
 import { homedir as homedir2 } from "node:os";
-import { join as join2, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-var TOKVIZ_HOME2 = join2(homedir2(), ".tokviz");
-var REPO_ROOT = process.env.TOKVIZ_REPO_ROOT ?? join2(dirname(fileURLToPath(import.meta.url)), "../../..");
+import { join as join3, dirname as dirname2 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var TOKVIZ_HOME2 = join3(homedir2(), ".tokviz");
+var REPO_ROOT = process.env.TOKVIZ_REPO_ROOT ?? join3(dirname2(fileURLToPath2(import.meta.url)), "../../..");
 function cursorHooksPath(global) {
-  return global ? join2(homedir2(), ".cursor", "hooks.json") : join2(process.cwd(), ".cursor", "hooks.json");
+  return global ? join3(homedir2(), ".cursor", "hooks.json") : join3(process.cwd(), ".cursor", "hooks.json");
 }
 function copilotHooksPath(global) {
-  return global ? join2(homedir2(), ".copilot", "hooks", "tokviz-tracker.json") : join2(process.cwd(), ".github", "hooks", "tokviz-tracker.json");
+  return global ? join3(homedir2(), ".copilot", "hooks", "tokviz-tracker.json") : join3(process.cwd(), ".github", "hooks", "tokviz-tracker.json");
 }
 function geminiHooksPath(global) {
-  return global ? join2(homedir2(), ".gemini", "hooks.json") : join2(process.cwd(), ".gemini", "hooks.json");
+  return global ? join3(homedir2(), ".gemini", "hooks.json") : join3(process.cwd(), ".gemini", "hooks.json");
 }
 
 // src/hooks-merge.ts
@@ -863,9 +1229,9 @@ function normalizeMatcher(raw) {
   return { matcher: raw.matcher, hooks: [] };
 }
 function readHooks(path) {
-  if (!existsSync2(path)) return { version: 1, hooks: {} };
+  if (!existsSync3(path)) return { version: 1, hooks: {} };
   try {
-    const parsed = JSON.parse(readFileSync2(path, "utf8"));
+    const parsed = JSON.parse(readFileSync3(path, "utf8"));
     const normalized = { version: parsed.version ?? 1, hooks: {} };
     for (const [event, matchers] of Object.entries(parsed.hooks ?? {})) {
       normalized.hooks[event] = (matchers ?? []).map(normalizeMatcher);
@@ -876,7 +1242,7 @@ function readHooks(path) {
   }
 }
 function writeHooks(path, data) {
-  mkdirSync2(dirname2(path), { recursive: true });
+  mkdirSync2(dirname3(path), { recursive: true });
   writeFileSync2(path, JSON.stringify(data, null, 2) + "\n", "utf8");
 }
 function isTokvizHook(entry) {
@@ -908,9 +1274,9 @@ function mergeMatchers(existing, incoming) {
   return result;
 }
 function installHookScripts(agent) {
-  const src = join3(REPO_ROOT, "hooks", agent, "hook.sh");
-  const destDir = join3(TOKVIZ_HOME2, "hooks", agent);
-  const dest = join3(destDir, "hook.sh");
+  const src = join4(REPO_ROOT, "hooks", agent, "hook.sh");
+  const destDir = join4(TOKVIZ_HOME2, "hooks", agent);
+  const dest = join4(destDir, "hook.sh");
   mkdirSync2(destDir, { recursive: true });
   copyFileSync(src, dest);
   try {
@@ -919,7 +1285,7 @@ function installHookScripts(agent) {
   }
 }
 function hookCommand(agent) {
-  return join3(TOKVIZ_HOME2, "hooks", agent, "hook.sh");
+  return join4(TOKVIZ_HOME2, "hooks", agent, "hook.sh");
 }
 function cursorHooksPayload(agent) {
   const cmd = hookCommand(agent);
@@ -962,11 +1328,11 @@ function copilotVsCodeHooksPayload(agent) {
   };
 }
 function mergeCopilotVsCodeHooks(targetPath, incoming) {
-  mkdirSync2(dirname2(targetPath), { recursive: true });
+  mkdirSync2(dirname3(targetPath), { recursive: true });
   let existing = { hooks: {} };
-  if (existsSync2(targetPath)) {
+  if (existsSync3(targetPath)) {
     try {
-      existing = JSON.parse(readFileSync2(targetPath, "utf8"));
+      existing = JSON.parse(readFileSync3(targetPath, "utf8"));
     } catch {
       existing = { hooks: {} };
     }
@@ -1017,7 +1383,7 @@ function mergeHooksFile(targetPath, incoming) {
   return { path: targetPath, merged: true };
 }
 function removeTokvizHooks(targetPath) {
-  if (!existsSync2(targetPath)) return false;
+  if (!existsSync3(targetPath)) return false;
   const data = readHooks(targetPath);
   let changed = false;
   for (const [event, matchers] of Object.entries(data.hooks)) {
@@ -1038,21 +1404,21 @@ function removeTokvizHooks(targetPath) {
 // src/commands/init.ts
 function copySkillsAndRules(targetDir, prose) {
   if (prose && prose !== "off") {
-    const skillsSrc = join4(REPO_ROOT, "skills");
-    const rulesSrc = join4(REPO_ROOT, "rules", "cursor");
-    const skillsDest = join4(targetDir, ".cursor", "skills");
-    const rulesDest = join4(targetDir, ".cursor", "rules");
+    const skillsSrc = join5(REPO_ROOT, "skills");
+    const rulesSrc = join5(REPO_ROOT, "rules", "cursor");
+    const skillsDest = join5(targetDir, ".cursor", "skills");
+    const rulesDest = join5(targetDir, ".cursor", "rules");
     mkdirSync3(skillsDest, { recursive: true });
     mkdirSync3(rulesDest, { recursive: true });
     for (const skill of ["tokviz-compress", "tokviz-stats"]) {
-      const src = join4(skillsSrc, skill);
-      if (existsSync3(src)) {
-        cpSync(src, join4(skillsDest, skill), { recursive: true });
+      const src = join5(skillsSrc, skill);
+      if (existsSync4(src)) {
+        cpSync(src, join5(skillsDest, skill), { recursive: true });
       }
     }
-    const ruleFile = join4(rulesSrc, "tokviz.mdc");
-    if (existsSync3(ruleFile)) {
-      cpSync(ruleFile, join4(rulesDest, "tokviz.mdc"));
+    const ruleFile = join5(rulesSrc, "tokviz.mdc");
+    if (existsSync4(ruleFile)) {
+      cpSync(ruleFile, join5(rulesDest, "tokviz.mdc"));
     }
   }
 }
@@ -1239,7 +1605,7 @@ function runGain() {
   if (top.length > 0) {
     lines.push("Top savings:");
     for (const [cmd, stats] of top) {
-      const pct = stats.raw > 0 ? Math.round(stats.saved / stats.raw * 100) : 0;
+      const pct = stats.raw > 0 ? Math.round(stats.saved / stats.raw * 1e3) / 10 : 0;
       lines.push(`  ${cmd.padEnd(16)} -${stats.saved.toLocaleString()} (${pct}%)`);
     }
   } else {
@@ -1249,13 +1615,13 @@ function runGain() {
 }
 
 // src/commands/doctor.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3 } from "node:fs";
+import { existsSync as existsSync5, readFileSync as readFileSync4 } from "node:fs";
 function runDoctor() {
   const config = getConfig();
   const stats = getGlobalStats();
   const lines = ["TokViz \u2014 Doctor", "\u2500".repeat(40)];
   const home = getTokvizHome();
-  lines.push(existsSync4(home) ? `\u2714 ~/.tokviz exists (${home})` : "\u2717 ~/.tokviz missing \u2014 run tokviz init");
+  lines.push(existsSync5(home) ? `\u2714 ~/.tokviz exists (${home})` : "\u2717 ~/.tokviz missing \u2014 run tokviz init");
   for (const [name, pathFn] of [
     ["cursor", () => cursorHooksPath(true)],
     ["copilot", () => copilotHooksPath(true)],
@@ -1263,13 +1629,13 @@ function runDoctor() {
   ]) {
     const p = pathFn();
     const hookScript = `${home}/hooks/${name}/hook.sh`;
-    if (existsSync4(p)) {
-      const hasTokviz = readFileSync3(p, "utf8").includes("tokviz");
+    if (existsSync5(p)) {
+      const hasTokviz = readFileSync4(p, "utf8").includes("tokviz");
       lines.push(hasTokviz ? `\u2714 ${name} hooks (${p})` : `\u26A0 ${name} hooks exist but no tokviz entry`);
     } else {
       lines.push(`\u25CB ${name} hooks not installed`);
     }
-    lines.push(existsSync4(hookScript) ? `  \u2714 hook script` : `  \u2717 hook script missing`);
+    lines.push(existsSync5(hookScript) ? `  \u2714 hook script` : `  \u2717 hook script missing`);
   }
   lines.push("");
   lines.push(`Config: enterprise=${config.enterpriseMode} noContentLog=${config.noContentLog} trackOnly=${config.trackOnly}`);
@@ -1330,6 +1696,16 @@ function runCompareCommand(opts) {
   return content;
 }
 
+// src/commands/bench.ts
+function runBenchReport(options) {
+  const fixtures = loadFixtures();
+  if (options.live) {
+    const repo = options.repo ?? process.cwd();
+    fixtures.push(...captureLiveFixtures(repo));
+  }
+  return runBenchmark(fixtures, options.target ?? 60);
+}
+
 // src/args.ts
 function nextValue(argv, index) {
   const value = argv[index + 1];
@@ -1342,6 +1718,9 @@ function parseTrailingFlags(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") out.json = true;
+    else if (arg === "--live") out.live = true;
+    else if (arg === "--repo") out.repo = nextValue(argv, i++) ?? "";
+    else if (arg === "--target") out.target = nextValue(argv, i++) ?? "60";
     else if (arg === "--no-recommendations") out.noRecommendations = true;
     else if (arg === "--global" || arg === "-g") out.global = true;
     else if (arg === "--enterprise") out.enterprise = true;
@@ -1377,6 +1756,7 @@ Usage:
   tokviz init -g --agent <cursor|copilot|gemini> [options]
   tokviz stats [--json] [--session <id>]
   tokviz gain
+  tokviz bench [--live] [--json] [--target <n>]
   tokviz report [options]
   tokviz compare [sessionA sessionB] [options]
   tokviz doctor
@@ -1444,6 +1824,22 @@ async function main() {
     case "gain":
       console.log(runGain());
       break;
+    case "bench": {
+      const benchOpts = {
+        live: !!flags.live,
+        repo: flags.repo,
+        target: flags.target ? Number(flags.target) : void 0
+      };
+      const report = runBenchReport(benchOpts);
+      const header = flags.live ? `Repo: ${benchOpts.repo ?? process.cwd()}
+
+` : "";
+      console.log(
+        flags.json ? JSON.stringify(report, null, 2) : header + formatBenchReport(report)
+      );
+      if (!report.pass) process.exitCode = 1;
+      break;
+    }
     case "report":
       console.log(
         runReport({
@@ -1482,7 +1878,7 @@ async function main() {
       console.log(runDoctor());
       break;
     case "hook": {
-      const stdin = readFileSync4(0, "utf8");
+      const stdin = readFileSync5(0, "utf8");
       const out = await runHook(stdin);
       process.stdout.write(out);
       break;
