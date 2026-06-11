@@ -15,14 +15,67 @@ var DEFAULT_CONFIG = {
   retentionDays: 90
 };
 
+// ../core/dist/security.js
+var SECURITY_CRITICAL_RE = /password|secret|token|api[_-]?key|credential|vulnerability|CVE-\d|CRITICAL|SECURITY|PRIVATE KEY|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{20,}|sk-[a-zA-Z0-9]{20,}/i;
+var NEVER_COMPRESS_CMD = /\b(cat|type|more|less)\s+[^\s|]*\.env\b|\b(cat|type)\s+.*\/\.env\b|secretsmanager|get-secret-value|vault\s+read|kubectl\s+get\s+secret|gpg\s+--decrypt|openssl\s+.*\b(key|pem)\b/i;
+function isSecurityCriticalLine(line) {
+  return SECURITY_CRITICAL_RE.test(line);
+}
+function isSensitiveCommand(command) {
+  return NEVER_COMPRESS_CMD.test(command);
+}
+function looksLikeEnvFile(output) {
+  const lines = output.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+  if (lines.length < 2)
+    return false;
+  const envLines = lines.filter((l) => /^[A-Z][A-Z0-9_]*\s*=/.test(l.trim())).length;
+  return envLines >= 2 && envLines / lines.length >= 0.5;
+}
+function looksLikeSecretMaterial(output) {
+  return /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(output) || /AKIA[0-9A-Z]{16}/.test(output) || /\bghp_[a-zA-Z0-9]{20,}\b/.test(output) || /\bsk-[a-zA-Z0-9]{20,}\b/.test(output) || /\bpostgresql:\/\/[^\s:@]+:[^\s@]+@/.test(output) || /\bmongodb(\+srv)?:\/\/[^\s:@]+:[^\s@]+@/.test(output);
+}
+function shouldCompress(command, output) {
+  if (isSensitiveCommand(command))
+    return false;
+  if (looksLikeEnvFile(output))
+    return false;
+  if (looksLikeSecretMaterial(output))
+    return false;
+  return true;
+}
+function redactSecrets(text) {
+  let out = text;
+  out = out.replace(/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]");
+  out = out.replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]");
+  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, "AKIA[REDACTED]");
+  out = out.replace(/\bghp_[a-zA-Z0-9]{20,}\b/g, "ghp_[REDACTED]");
+  out = out.replace(/\bsk-[a-zA-Z0-9]{20,}\b/g, "sk-[REDACTED]");
+  out = out.replace(/(api[_-]?key|password|secret|token|credential)\s*[=:]\s*\S+/gi, "$1=[REDACTED]");
+  out = out.replace(/\b(postgresql|mysql|mongodb(\+srv)?|redis):\/\/([^:\s@]+):([^@\s/]+)@/gi, (_match, scheme, _srv, user) => `${scheme}://${user}:[REDACTED]@`);
+  return out;
+}
+function collapseDiffBlock(block, headKeep, kind) {
+  if (block.length === 0)
+    return block;
+  const critical = block.filter(isSecurityCriticalLine);
+  const normal = block.filter((l) => !isSecurityCriticalLine(l));
+  if (block.length <= headKeep + critical.length) {
+    return block;
+  }
+  const keptNormal = normal.slice(0, headKeep);
+  const omitted = block.length - keptNormal.length - critical.length;
+  const result = [...keptNormal, ...critical];
+  if (omitted > 0) {
+    result.push(`[tokviz] \u2026 ${omitted} ${kind} omitted (${critical.length} security lines kept)`);
+  }
+  return result;
+}
+
 // ../core/dist/tokens.js
 function estimateTokens(text) {
   if (!text)
     return 0;
   return Math.ceil(text.length / 4);
-}
-function redactSecrets(text) {
-  return text.replace(/(api[_-]?key|password|secret|token)\s*[=:]\s*\S+/gi, "$1=[REDACTED]").replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
 }
 
 // ../core/dist/db.js
@@ -344,12 +397,7 @@ function compressCustomGitDiff(output) {
         block.push(lines[i].trimStart());
         i++;
       }
-      if (block.length > 5) {
-        result.push(block[0], block[1]);
-        result.push(`[tokviz] \u2026 ${block.length - 2} additions omitted`);
-      } else {
-        result.push(...block);
-      }
+      result.push(...collapseDiffBlock(block, 2, "additions"));
       continue;
     }
     if (trimmed.startsWith("-")) {
@@ -358,12 +406,7 @@ function compressCustomGitDiff(output) {
         block.push(lines[i].trimStart());
         i++;
       }
-      if (block.length > 4) {
-        result.push(block[0], block[1]);
-        result.push(`[tokviz] \u2026 ${block.length - 2} deletions omitted`);
-      } else {
-        result.push(...block);
-      }
+      result.push(...collapseDiffBlock(block, 2, "deletions"));
       continue;
     }
     if (/^\+\d+ -\d+$/.test(trimmed)) {
@@ -400,12 +443,7 @@ function compressUnifiedGitDiff(output) {
         block.push(lines[i].trimStart());
         i++;
       }
-      if (block.length > 5) {
-        result.push(block[0], block[1]);
-        result.push(`[tokviz] \u2026 ${block.length - 2} additions omitted`);
-      } else {
-        result.push(...block);
-      }
+      result.push(...collapseDiffBlock(block, 2, "additions"));
       continue;
     }
     if (trimmed.startsWith("-")) {
@@ -414,12 +452,7 @@ function compressUnifiedGitDiff(output) {
         block.push(lines[i].trimStart());
         i++;
       }
-      if (block.length > 4) {
-        result.push(block[0], block[1]);
-        result.push(`[tokviz] \u2026 ${block.length - 2} deletions omitted`);
-      } else {
-        result.push(...block);
-      }
+      result.push(...collapseDiffBlock(block, 2, "deletions"));
       continue;
     }
     i++;
@@ -485,15 +518,19 @@ function smartCompress(cmd, output) {
 
 // ../core/dist/compressor/shell.js
 function compressShellOutput(command, output) {
-  const tokensRaw = estimateTokens(output);
-  if (!output.trim()) {
-    return { output, tokensRaw, tokensOptimized: tokensRaw, compressed: false };
+  const safe = redactSecrets(output);
+  const tokensRaw = estimateTokens(safe);
+  if (!safe.trim()) {
+    return { output: safe, tokensRaw, tokensOptimized: tokensRaw, compressed: false };
   }
-  const compressed = smartCompress(command, output);
+  if (!shouldCompress(command, safe)) {
+    return { output: safe, tokensRaw, tokensOptimized: tokensRaw, compressed: false };
+  }
+  const compressed = redactSecrets(smartCompress(command, safe));
   const tokensOptimized = estimateTokens(compressed);
-  const didCompress = compressed !== output && tokensOptimized < tokensRaw;
+  const didCompress = compressed !== safe && tokensOptimized < tokensRaw;
   return {
-    output: didCompress ? compressed : output,
+    output: didCompress ? compressed : safe,
     tokensRaw,
     tokensOptimized: didCompress ? tokensOptimized : tokensRaw,
     compressed: didCompress

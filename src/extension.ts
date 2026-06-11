@@ -10,10 +10,16 @@ import {
 } from "./agentDetector";
 import {
   calculateCompressionSnapshot,
+  calculateEffectiveCompression,
   calculateProjections,
   type CompressionSnapshot,
+  type EffectiveCompression,
   type TimeProjection,
 } from "./calculator";
+import {
+  calculateCommandBreakdown,
+  type CommandBreakdownRow,
+} from "./commandBreakdown";
 
 /**
  * TokenSaver — autonomous token-savings dashboard.
@@ -30,10 +36,11 @@ interface TokVizEvent {
   timestamp: string;
   source: string;
   toolName: string;
+  command?: string;
   tokensRaw: number;
   tokensOptimized: number;
   tokensSaved: number;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> & { commandType?: string };
 }
 
 interface AgentBreakdown {
@@ -57,6 +64,9 @@ interface TokenStats {
   projections: TimeProjection;
   todayCompression: CompressionSnapshot;
   totalCompression: CompressionSnapshot;
+  effectiveCompression: EffectiveCompression;
+  todayEffectiveCompression: EffectiveCompression;
+  commandBreakdown: CommandBreakdownRow[];
 }
 
 interface HookStatus {
@@ -199,6 +209,10 @@ function computeStats(): TokenStats {
   const projections = calculateProjections(projectionEvents);
   const todayCompression = calculateCompressionSnapshot(projectionEvents, true);
   const totalCompression = calculateCompressionSnapshot(projectionEvents, false);
+  const effectiveCompression = calculateEffectiveCompression(projectionEvents, false);
+  const todayEffectiveCompression = calculateEffectiveCompression(projectionEvents, true);
+  const shellEvents = events.filter((ev) => ev.source === "shell");
+  const commandBreakdown = calculateCommandBreakdown(shellEvents);
 
   return {
     rawTokens,
@@ -212,6 +226,9 @@ function computeStats(): TokenStats {
     projections,
     todayCompression,
     totalCompression,
+    effectiveCompression,
+    todayEffectiveCompression,
+    commandBreakdown,
   };
 }
 
@@ -573,6 +590,32 @@ function getDashboardHtml(catSrc: string): string {
   .agent-row .name { text-transform: capitalize; font-weight: 600; }
   .agent-row .meta { color: var(--vscode-descriptionForeground); }
 
+  .cmd-section { margin-top: 18px; }
+  .cmd-section h3 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--vscode-descriptionForeground); margin: 0 0 8px;
+  }
+  .cmd-table {
+    width: 100%; border-collapse: collapse; font-size: 11px;
+  }
+  .cmd-table th, .cmd-table td {
+    padding: 7px 8px; text-align: left;
+    border-bottom: 1px solid var(--vscode-panel-border);
+  }
+  .cmd-table th {
+    color: var(--vscode-descriptionForeground); font-weight: 600;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
+  }
+  .cmd-table td.num { text-align: right; font-family: var(--vscode-editor-font-family, monospace); }
+  .cmd-table tr.total td {
+    font-weight: 700; border-top: 2px solid var(--vscode-panel-border);
+  }
+  .cmd-table tr.other td { color: var(--vscode-descriptionForeground); }
+  .cmd-hint {
+    margin-top: 8px; font-size: 10px; line-height: 1.45;
+    color: var(--vscode-descriptionForeground);
+  }
+
   .empty {
     text-align: center; padding: 26px 18px; margin: 16px 0;
     border: 1px dashed var(--vscode-panel-border); border-radius: 10px;
@@ -725,7 +768,8 @@ function getDashboardHtml(catSrc: string): string {
   <div class="content hidden" id="content">
     <div class="hero">
       <div class="big" id="heroSaved">0</div>
-      <div class="sub">tokens saved · <span id="heroPercent">0%</span> compression</div>
+      <div class="sub">tokens saved · <span id="heroPercent">0%</span> overall</div>
+      <div class="sub" id="heroEffective" style="margin-top:6px;color:var(--vscode-charts-green)"></div>
     </div>
 
     <div class="grid">
@@ -752,8 +796,9 @@ function getDashboardHtml(catSrc: string): string {
     </div>
 
     <div class="bar-wrap">
-      <div class="caption">Compression efficiency</div>
+      <div class="caption">Compression when active</div>
       <div class="bar"><span id="bar" style="width:0%">0%</span></div>
+      <div class="caption" id="barHint" style="margin-top:6px"></div>
     </div>
 
     <div class="projections-section">
@@ -781,6 +826,17 @@ function getDashboardHtml(catSrc: string): string {
           <div class="projection-unit">per month</div>
         </div>
       </div>
+    </div>
+
+    <div class="cmd-section" id="cmdSection">
+      <h3>Compression by command</h3>
+      <table class="cmd-table" id="cmdTable">
+        <thead>
+          <tr><th>Command</th><th class="num">Count</th><th class="num">Compress.</th></tr>
+        </thead>
+        <tbody id="cmdBody"></tbody>
+      </table>
+      <div class="cmd-hint" id="cmdHint"></div>
     </div>
 
     <div class="agents" id="agents"></div>
@@ -834,6 +890,14 @@ function getDashboardHtml(catSrc: string): string {
 
     document.getElementById('heroSaved').textContent = fmt(s.savedTokens);
     document.getElementById('heroPercent').textContent = s.savingsPercent.toFixed(1) + '%';
+    const eff = s.effectiveCompression || {};
+    const heroEff = document.getElementById('heroEffective');
+    if (eff.activeEvents > 0) {
+      heroEff.textContent = eff.compressionPercent.toFixed(1) + '% when compression fires (' +
+        eff.activeEvents + '/' + eff.totalEvents + ' shell events)';
+    } else {
+      heroEff.textContent = '';
+    }
     document.getElementById('today').textContent = fmt(s.todaySaved);
     document.getElementById('events').textContent = fmt(s.events);
 
@@ -858,15 +922,56 @@ function getDashboardHtml(catSrc: string): string {
     }
 
     const bar = document.getElementById('bar');
-    const pct = Math.max(0, Math.min(100, s.savingsPercent));
+    const barHint = document.getElementById('barHint');
+    const barPct = eff.activeEvents > 0 ? eff.compressionPercent : s.savingsPercent;
+    const pct = Math.max(0, Math.min(100, barPct));
     bar.style.width = pct + '%';
     bar.textContent = pct.toFixed(0) + '%';
+    barHint.textContent = eff.activeEvents > 0
+      ? 'Overall ' + s.savingsPercent.toFixed(1) + '% includes short outputs left unchanged.'
+      : 'Verbose shell output (git diff, tests, logs) compresses more — keep working.';
 
     const p = s.projections || {};
     document.getElementById('projDaily').textContent = fmtTokens(p.dailyTokens);
     document.getElementById('projWeekly').textContent = fmtTokens(p.weeklyTokens);
     document.getElementById('projMonthly').textContent = fmtTokens(p.monthlyTokens);
     document.getElementById('projCost').textContent = fmtUsd(p.monthlyCostSavedUSD);
+
+    const cmdBody = document.getElementById('cmdBody');
+    const cmdHint = document.getElementById('cmdHint');
+    const breakdown = (s.commandBreakdown || []).filter(r => r.command !== 'TOTAL');
+    const totalRow = (s.commandBreakdown || []).find(r => r.command === 'TOTAL');
+    if (breakdown.length) {
+      const rowsHtml = breakdown.map(r => {
+        const cls = r.command === 'other' ? ' class="other"' : '';
+        return '<tr' + cls + '><td>' + r.command + '</td><td class="num">' + r.count +
+          '</td><td class="num">' + r.compressionPercent.toFixed(1) + '%</td></tr>';
+      }).join('');
+      const totalHtml = totalRow
+        ? '<tr class="total"><td>TOTAL</td><td class="num">' + totalRow.count +
+          '</td><td class="num">' + totalRow.compressionPercent.toFixed(1) + '%</td></tr>'
+        : '';
+      cmdBody.innerHTML = rowsHtml + totalHtml;
+
+      const other = breakdown.find(r => r.command === 'other');
+      const specialized = breakdown.filter(r => r.command !== 'other');
+      const specializedPct = specialized.reduce((n, r) => n + r.count, 0);
+      const otherPct = totalRow && totalRow.count > 0
+        ? Math.round((other?.count || 0) / totalRow.count * 100)
+        : 0;
+      if (other && other.count > 0 && specialized.length > 0) {
+        cmdHint.textContent = 'Strong compressors (git, tests, logs) work well. ' +
+          otherPct + '% of events are short/other commands with little to compress. ' +
+          'Add kubectl, aws, grep compressors to raise global rate.';
+      } else if (!specialized.length) {
+        cmdHint.textContent = 'Command names were not logged on older events — reload after update; new shell runs will populate this table.';
+      } else {
+        cmdHint.textContent = 'Per-command rate uses raw vs optimized tokens for each shell event.';
+      }
+    } else {
+      cmdBody.innerHTML = '';
+      cmdHint.textContent = 'No shell events yet.';
+    }
 
     const agents = document.getElementById('agents');
     const rows = (s.byAgent || []).filter(a => a.events > 0);

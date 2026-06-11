@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   calculateCompressionSnapshot,
+  calculateEffectiveCompression,
   calculateProjections,
   formatCurrency,
   formatTokenCount,
@@ -95,6 +96,22 @@ describe("calculateCompressionSnapshot", () => {
     assert.equal(result.optimizedTokens, 150);
     assert.equal(result.savedTokens, 50);
     assert.equal(result.events, 1);
+  });
+});
+
+describe("calculateEffectiveCompression", () => {
+  it("only counts events with savings", () => {
+    const result = calculateEffectiveCompression([
+      { timestamp: "2026-01-01T10:00:00Z", tokensRaw: 1000, tokensOptimized: 600, tokensSaved: 400 },
+      { timestamp: "2026-01-01T10:01:00Z", tokensRaw: 50, tokensOptimized: 50, tokensSaved: 0 },
+      { timestamp: "2026-01-01T10:02:00Z", tokensRaw: 500, tokensOptimized: 400, tokensSaved: 100 },
+    ]);
+
+    assert.equal(result.activeEvents, 2);
+    assert.equal(result.totalEvents, 3);
+    assert.equal(result.rawTokens, 1500);
+    assert.equal(result.savedTokens, 500);
+    assert.equal(result.compressionPercent, parseFloat(((500 / 1500) * 100).toFixed(1)));
   });
 });
 

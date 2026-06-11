@@ -18,6 +18,15 @@ export interface CompressionSnapshot {
   events: number;
 }
 
+/** Savings on shell events where compression actually reduced tokens. */
+export interface EffectiveCompression {
+  compressionPercent: number;
+  activeEvents: number;
+  totalEvents: number;
+  rawTokens: number;
+  savedTokens: number;
+}
+
 /** Minimal event shape for projection math. */
 export interface ProjectionEvent {
   timestamp: string;
@@ -94,6 +103,37 @@ export function calculateCompressionSnapshot(
     compressionPercent:
       rawTokens > 0 ? parseFloat(((savedTokens / rawTokens) * 100).toFixed(1)) : 0,
     events: scoped.length,
+  };
+}
+
+/** Rate when compression fired — excludes short/pass-through shell outputs. */
+export function calculateEffectiveCompression(
+  events: ProjectionEvent[],
+  todayOnly = false
+): EffectiveCompression {
+  const scoped = (todayOnly
+    ? events.filter((event) => event.timestamp && isToday(event.timestamp))
+    : events
+  ).filter((event) => eventSavedTokens(event) > 0);
+
+  let rawTokens = 0;
+  let savedTokens = 0;
+  for (const event of scoped) {
+    rawTokens += eventRawTokens(event);
+    savedTokens += eventSavedTokens(event);
+  }
+
+  const totalScoped = todayOnly
+    ? events.filter((event) => event.timestamp && isToday(event.timestamp)).length
+    : events.length;
+
+  return {
+    compressionPercent:
+      rawTokens > 0 ? parseFloat(((savedTokens / rawTokens) * 100).toFixed(1)) : 0,
+    activeEvents: scoped.length,
+    totalEvents: totalScoped,
+    rawTokens: Math.round(rawTokens),
+    savedTokens: Math.round(savedTokens),
   };
 }
 
