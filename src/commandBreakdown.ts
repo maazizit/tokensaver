@@ -5,7 +5,11 @@
 export const COMMAND_TYPES = [
   "docker logs",
   "docker ps",
-  "kubectl get",
+  "kubectl",
+  "aws",
+  "gcp",
+  "curl",
+  "cat",
   "git diff",
   "git status",
   "git log",
@@ -52,7 +56,20 @@ export function classifyShellCommand(event: CommandBreakdownEvent): string {
   }
 
   const lower = cmd.toLowerCase();
+  const wordMatchers: Partial<Record<(typeof COMMAND_TYPES)[number], RegExp>> = {
+    cat: /\bcat\b/,
+    curl: /\bcurl\b/,
+    aws: /\baws\b/,
+    kubectl: /\bkubectl\b/,
+    gcp: /\b(gcloud|gcp)\b/,
+  };
+
   for (const name of COMMAND_TYPES) {
+    const wordRe = wordMatchers[name];
+    if (wordRe) {
+      if (wordRe.test(lower)) return name;
+      continue;
+    }
     if (lower.includes(name)) {
       return name;
     }
