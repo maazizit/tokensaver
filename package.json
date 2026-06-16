@@ -2,7 +2,7 @@
   "name": "tokensaver",
   "displayName": "TokenSaver",
   "description": "Compress AI shell output automatically — no TokViz install needed. Bundles TokViz, detects Cursor/Copilot/Gemini-Antigravity, installs hooks silently. Dashboard shows tokens saved. Unlike TokGuess (usage tracking), this actually reduces context sent to your agent.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "publisher": "maazizit",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -72,6 +72,18 @@
       {
         "command": "tokensaver.enableTracking",
         "title": "TokenSaver: Enable Token Tracking"
+      },
+      {
+        "command": "tokensaver.resetMetrics",
+        "title": "TokenSaver: Reset Metrics Baseline"
+      },
+      {
+        "command": "tokensaver.enableProseMode",
+        "title": "TokenSaver: Enable Prose Compression"
+      },
+      {
+        "command": "tokensaver.auditMcp",
+        "title": "TokenSaver: Audit MCP Servers"
       }
     ],
     "menus": {
@@ -90,13 +102,24 @@
           "type": "boolean",
           "default": true,
           "description": "Show token savings in the status bar"
+        },
+        "tokensaver.proseMode": {
+          "type": "string",
+          "enum": ["off", "lite", "full", "ultra"],
+          "default": "full",
+          "description": "Install terse output rules/skills when hooks are set up"
+        },
+        "tokensaver.auditMcpOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify about MCP token overhead on startup when servers are detected"
         }
       }
     }
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "npm run compile && node --test out/calculator.test.js out/commandBreakdown.test.js",
+    "test": "npm run compile && node --test out/calculator.test.js out/commandBreakdown.test.js out/periodStats.test.js",
     "prepare-cli": "node scripts/prepare-cli.mjs",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run prepare-cli && npm run compile",

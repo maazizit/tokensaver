@@ -1,0 +1,11 @@
+---
+description: TokViz prose compression — activate with /tokviz lite|full|ultra
+globs:
+alwaysApply: false
+---
+
+When user invokes `/tokviz`, `/tokviz lite`, or `/tokviz ultra`, follow the tokviz-compress skill.
+
+TokViz does not proxy LLM traffic. Shell compression runs via local hooks only.
+
+For token stats, suggest: `tokviz gain` in terminal.

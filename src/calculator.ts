@@ -2,6 +2,8 @@
  * Token savings projections — pure calculation, no VS Code deps.
  */
 
+import { isToday } from "./time";
+
 export interface TimeProjection {
   dailyTokens: number;
   weeklyTokens: number;
@@ -55,16 +57,6 @@ function eventRawTokens(event: ProjectionEvent): number {
 
 function eventOptimizedTokens(event: ProjectionEvent): number {
   return event.optimized ?? event.tokensOptimized ?? 0;
-}
-
-function isToday(timestamp: string): boolean {
-  const d = new Date(timestamp);
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
 }
 
 /** Sum raw / optimized / saved for all events or today only. */
@@ -135,6 +127,20 @@ export function calculateEffectiveCompression(
     rawTokens: Math.round(rawTokens),
     savedTokens: Math.round(savedTokens),
   };
+}
+
+export function filterEventsSince(
+  events: ProjectionEvent[],
+  sinceIso?: string
+): ProjectionEvent[] {
+  if (!sinceIso) return events;
+  const since = Date.parse(sinceIso);
+  if (Number.isNaN(since)) return events;
+  return events.filter((event) => {
+    if (!event.timestamp) return false;
+    const ts = Date.parse(event.timestamp);
+    return !Number.isNaN(ts) && ts >= since;
+  });
 }
 
 /**

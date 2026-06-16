@@ -46,11 +46,22 @@ if (pnpm.status !== 0) {
 
 mkdirSync(bundledDir, { recursive: true });
 
+// Track what we successfully bundled
+let hasBundle = false;
+let hasHooks = false;
+
 if (existsSync(bundleSrc)) {
   copyFileSync(bundleSrc, join(bundledDir, "cli.bundle.mjs"));
   log("copied cli.bundle.mjs");
+  hasBundle = true;
 } else {
   log(`bundle not found at ${bundleSrc}`);
+  // Check if we have a previously committed bundle
+  const committedBundle = join(bundledDir, "cli.bundle.mjs");
+  if (existsSync(committedBundle)) {
+    log("using existing committed bundle");
+    hasBundle = true;
+  }
 }
 
 if (existsSync(hooksSrc)) {
@@ -68,8 +79,37 @@ if (existsSync(hooksSrc)) {
     }
   }
   log("copied hooks/");
+  hasHooks = true;
 } else {
   log(`hooks not found at ${hooksSrc}`);
+  // Check if we have previously committed hooks
+  const committedHooks = join(bundledDir, "hooks");
+  if (existsSync(committedHooks)) {
+    log("using existing committed hooks");
+    hasHooks = true;
+  }
 }
 
-log("done");
+for (const asset of ["skills", "rules", "templates"]) {
+  const src = join(tokvizRoot, asset);
+  const dest = join(bundledDir, asset);
+  if (existsSync(src)) {
+    cpSync(src, dest, { recursive: true });
+    log(`copied ${asset}/`);
+  }
+}
+
+// Validate that critical assets are present
+if (!hasBundle) {
+  console.error("FATAL: CLI bundle not found — extension cannot function without it");
+  console.error("Expected: bundled/cli.bundle.mjs");
+  process.exit(1);
+}
+
+if (!hasHooks) {
+  console.error("FATAL: Hook scripts not found — extension cannot track tokens without them");
+  console.error("Expected: bundled/hooks/");
+  process.exit(1);
+}
+
+log("done — all required assets present");

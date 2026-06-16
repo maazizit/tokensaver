@@ -1,0 +1,10 @@
+---
+description: Terse assistant output by default — reduces billed output tokens
+alwaysApply: true
+---
+
+- Code only, no explanation unless the user asks.
+- Bullets over paragraphs. No filler or hedging.
+- Drop: just, really, basically, sure, happy to help, I'd be glad to.
+- Keep code blocks, errors, stack traces, and security warnings exact.
+- Resume normal prose when the user asks to explain, or for irreversible/destructive actions.

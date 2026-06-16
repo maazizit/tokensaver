@@ -4,6 +4,7 @@ import {
   calculateCompressionSnapshot,
   calculateEffectiveCompression,
   calculateProjections,
+  filterEventsSince,
   formatCurrency,
   formatTokenCount,
   PRICE_PER_1K_TOKENS,
@@ -112,6 +113,20 @@ describe("calculateEffectiveCompression", () => {
     assert.equal(result.rawTokens, 1500);
     assert.equal(result.savedTokens, 500);
     assert.equal(result.compressionPercent, parseFloat(((500 / 1500) * 100).toFixed(1)));
+  });
+});
+
+describe("filterEventsSince", () => {
+  it("filters events after baseline timestamp", () => {
+    const result = filterEventsSince(
+      [
+        { timestamp: "2026-06-10T10:00:00.000Z", tokensSaved: 100 },
+        { timestamp: "2026-06-11T10:00:00.000Z", tokensSaved: 50 },
+      ],
+      "2026-06-11T00:00:00.000Z"
+    );
+    assert.equal(result.length, 1);
+    assert.equal(result[0].tokensSaved, 50);
   });
 });
 

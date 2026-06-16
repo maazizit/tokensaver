@@ -11,15 +11,15 @@ import {
 import {
   calculateCompressionSnapshot,
   calculateEffectiveCompression,
-  calculateProjections,
-  type CompressionSnapshot,
-  type EffectiveCompression,
-  type TimeProjection,
+  filterEventsSince,
 } from "./calculator";
 import {
-  calculateCommandBreakdown,
-  type CommandBreakdownRow,
-} from "./commandBreakdown";
+  buildAllPeriodStats,
+  type DashboardPeriod,
+  type PeriodStats,
+} from "./periodStats";
+import { validateEventsFile } from "./validation";
+import type { TokVizEvent } from "./types";
 
 /**
  * TokenSaver — autonomous token-savings dashboard.
@@ -29,44 +29,22 @@ import {
  * run `tokviz init` for each. Stats read live from ~/.tokviz/events.json.
  */
 
-interface TokVizEvent {
-  id: string;
-  sessionId: string;
-  agent: string;
-  timestamp: string;
-  source: string;
-  toolName: string;
-  command?: string;
-  tokensRaw: number;
-  tokensOptimized: number;
-  tokensSaved: number;
-  metadata?: Record<string, unknown> & { commandType?: string };
-}
-
-interface AgentBreakdown {
-  agent: string;
-  rawTokens: number;
-  optimizedTokens: number;
-  savedTokens: number;
-  savingsPercent: number;
-  events: number;
-}
-
 interface TokenStats {
-  rawTokens: number;
-  optimizedTokens: number;
+  periods: Record<DashboardPeriod, PeriodStats>;
+  defaultPeriod: DashboardPeriod;
+  hooks: HookStatus[];
+  versionCompression: ReturnType<typeof calculateCompressionSnapshot>;
+  versionEffectiveCompression: ReturnType<typeof calculateEffectiveCompression>;
+  versionLabel: string;
+  /** @deprecated use periods.today */
+  todaySaved: number;
+  /** @deprecated use periods.all */
   savedTokens: number;
+  /** @deprecated use periods.today.compression */
+  todayCompression: ReturnType<typeof calculateCompressionSnapshot>;
+  /** @deprecated use periods.all.compression */
   savingsPercent: number;
   events: number;
-  todaySaved: number;
-  byAgent: AgentBreakdown[];
-  hooks: HookStatus[];
-  projections: TimeProjection;
-  todayCompression: CompressionSnapshot;
-  totalCompression: CompressionSnapshot;
-  effectiveCompression: EffectiveCompression;
-  todayEffectiveCompression: EffectiveCompression;
-  commandBreakdown: CommandBreakdownRow[];
 }
 
 interface HookStatus {
@@ -96,22 +74,12 @@ function readEvents(): TokVizEvent[] {
       return [];
     }
     const parsed = JSON.parse(raw);
-    const events = Array.isArray(parsed) ? parsed : parsed.events;
-    return Array.isArray(events) ? events : [];
+    // Use validation to ensure data integrity
+    return validateEventsFile(parsed);
   } catch (error) {
     console.error("TokenSaver: failed to read events.json", error);
     return [];
   }
-}
-
-function isToday(timestamp: string): boolean {
-  const d = new Date(timestamp);
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
 }
 
 function detectHooks(): HookStatus[] {
@@ -153,51 +121,7 @@ function detectHooks(): HookStatus[] {
 
 function computeStats(): TokenStats {
   const events = readEvents();
-
-  let rawTokens = 0;
-  let optimizedTokens = 0;
-  let savedTokens = 0;
-  let todaySaved = 0;
-
-  const agentMap = new Map<string, AgentBreakdown>();
-
-  for (const ev of events) {
-    const raw = ev.tokensRaw || 0;
-    const opt = ev.tokensOptimized || 0;
-    const saved = ev.tokensSaved || 0;
-
-    rawTokens += raw;
-    optimizedTokens += opt;
-    savedTokens += saved;
-
-    if (ev.timestamp && isToday(ev.timestamp)) {
-      todaySaved += saved;
-    }
-
-    const agent = ev.agent || "unknown";
-    const bucket =
-      agentMap.get(agent) ||
-      {
-        agent,
-        rawTokens: 0,
-        optimizedTokens: 0,
-        savedTokens: 0,
-        savingsPercent: 0,
-        events: 0,
-      };
-    bucket.rawTokens += raw;
-    bucket.optimizedTokens += opt;
-    bucket.savedTokens += saved;
-    bucket.events += 1;
-    agentMap.set(agent, bucket);
-  }
-
-  const byAgent = Array.from(agentMap.values())
-    .map((b) => ({
-      ...b,
-      savingsPercent: b.rawTokens > 0 ? (b.savedTokens / b.rawTokens) * 100 : 0,
-    }))
-    .sort((a, b) => b.savedTokens - a.savedTokens);
+  const periods = buildAllPeriodStats(events);
 
   const projectionEvents = events.map((ev) => ({
     timestamp: ev.timestamp,
@@ -206,29 +130,23 @@ function computeStats(): TokenStats {
     tokensOptimized: ev.tokensOptimized,
   }));
 
-  const projections = calculateProjections(projectionEvents);
-  const todayCompression = calculateCompressionSnapshot(projectionEvents, true);
-  const totalCompression = calculateCompressionSnapshot(projectionEvents, false);
-  const effectiveCompression = calculateEffectiveCompression(projectionEvents, false);
-  const todayEffectiveCompression = calculateEffectiveCompression(projectionEvents, true);
-  const shellEvents = events.filter((ev) => ev.source === "shell");
-  const commandBreakdown = calculateCommandBreakdown(shellEvents);
+  const versionEvents = filterEventsSince(projectionEvents, metricsBaselineAt);
+  const allSaved = periods.all.savedTokens;
+  const allRaw = periods.all.compression.rawTokens;
 
   return {
-    rawTokens,
-    optimizedTokens,
-    savedTokens,
-    savingsPercent: rawTokens > 0 ? (savedTokens / rawTokens) * 100 : 0,
-    events: events.length,
-    todaySaved,
-    byAgent,
+    periods,
+    defaultPeriod: dashboardPeriod,
     hooks: detectHooks(),
-    projections,
-    todayCompression,
-    totalCompression,
-    effectiveCompression,
-    todayEffectiveCompression,
-    commandBreakdown,
+    versionCompression: calculateCompressionSnapshot(versionEvents, false),
+    versionEffectiveCompression: calculateEffectiveCompression(versionEvents, false),
+    versionLabel: `v${extensionVersion}`,
+    todaySaved: periods.today.savedTokens,
+    savedTokens: allSaved,
+    todayCompression: periods.today.compression,
+    savingsPercent:
+      allRaw > 0 ? (periods.all.compression.savedTokens / allRaw) * 100 : 0,
+    events: events.length,
   };
 }
 
@@ -245,8 +163,12 @@ function updateStatusBar(stats: TokenStats): void {
 
   if (stats.savedTokens > 0) {
     const savedK = (stats.savedTokens / 1000).toFixed(1);
-    statusBarItem.text = `$(zap) -${savedK}K tokens (${stats.savingsPercent.toFixed(0)}%)`;
-    statusBarItem.tooltip = `TokenSaver: ${stats.savedTokens.toLocaleString()} tokens saved · ${stats.events} events`;
+    const todayPct = stats.todayCompression.compressionPercent.toFixed(0);
+    statusBarItem.text = `$(zap) -${savedK}K · today ${todayPct}%`;
+    statusBarItem.tooltip =
+      `TokenSaver ${stats.versionLabel}: today ${todayPct}% · ` +
+      `${stats.versionCompression.compressionPercent.toFixed(0)}% since update · ` +
+      `${stats.savedTokens.toLocaleString()} tokens saved total`;
   } else {
     const anyHooks = stats.hooks.some((h) => h.installed);
     statusBarItem.text = "$(zap) TokenSaver";
@@ -306,6 +228,60 @@ function startWatching(context: vscode.ExtensionContext): void {
 // ---------------------------------------------------------------------------
 
 let extensionPath = "";
+let metricsBaselineAt: string | undefined;
+let extensionVersion = "0.0.0";
+let dashboardPeriod: DashboardPeriod = "today";
+let extensionContext: vscode.ExtensionContext | undefined;
+
+function ensureCompressionConfig(): void {
+  const configPath = path.join(TOKVIZ_DIR, "config.json");
+  const defaults = {
+    enterpriseMode: false,
+    noContentLog: false,
+    trackOnly: false,
+    retentionDays: 90,
+  };
+  let config: Record<string, unknown> = { ...defaults };
+  try {
+    if (fs.existsSync(configPath)) {
+      config = { ...defaults, ...JSON.parse(fs.readFileSync(configPath, "utf8")) };
+    }
+    config.enterpriseMode = false;
+    config.noContentLog = false;
+    config.trackOnly = false;
+    fs.mkdirSync(TOKVIZ_DIR, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
+  } catch (error) {
+    console.error("TokenSaver: failed to normalize tokviz config", error);
+  }
+}
+
+function setupMetricsBaseline(context: vscode.ExtensionContext): void {
+  extensionVersion = context.extension.packageJSON.version ?? "0.0.0";
+  const key = "tokensaver.metricsBaseline";
+  const stored = context.globalState.get<{ version: string; at: string }>(key);
+  if (!stored || stored.version !== extensionVersion) {
+    metricsBaselineAt = new Date().toISOString();
+    void context.globalState.update(key, {
+      version: extensionVersion,
+      at: metricsBaselineAt,
+    });
+  } else {
+    metricsBaselineAt = stored.at;
+  }
+}
+
+async function resetMetricsBaseline(context: vscode.ExtensionContext): Promise<void> {
+  metricsBaselineAt = new Date().toISOString();
+  await context.globalState.update("tokensaver.metricsBaseline", {
+    version: extensionVersion,
+    at: metricsBaselineAt,
+  });
+  refresh();
+  vscode.window.showInformationMessage(
+    `TokenSaver: metrics reset — dashboard now tracks from v${extensionVersion} only.`
+  );
+}
 
 function bundledCliPath(): string {
   return path.join(extensionPath, "bundled", "cli.bundle.mjs");
@@ -328,21 +304,43 @@ function writeCliPath(): void {
   }
 }
 
+function getWorkspaceRoot(): string | undefined {
+  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+function getProseMode(): string {
+  return vscode.workspace.getConfiguration("tokensaver").get<string>("proseMode", "full");
+}
+
 /**
  * Runs the bundled CLI's `init` using VS Code's own Node runtime, so no global
  * `tokviz` binary or npm install is required. TOKVIZ_REPO_ROOT points the CLI at
  * the bundled hook scripts shipped inside the extension.
  */
-function runBundledInit(agent: string): Promise<{ ok: boolean; error?: string }> {
+function runBundledInit(
+  agent: string,
+  opts: { prose?: string; workspace?: string } = {}
+): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     const cli = bundledCliPath();
     if (!fs.existsSync(cli)) {
       resolve({ ok: false, error: "bundled CLI not found" });
       return;
     }
+
+    const prose = opts.prose ?? getProseMode();
+    const workspace = opts.workspace ?? getWorkspaceRoot();
+    const args = [cli, "init", "-g", "--agent", agent];
+    if (prose && prose !== "off") {
+      args.push("--prose", prose);
+      if (workspace) {
+        args.push("--workspace", workspace);
+      }
+    }
+
     child_process.execFile(
       process.execPath,
-      [cli, "init", "-g", "--agent", agent, "--enterprise"],
+      args,
       {
         env: {
           ...process.env,
@@ -355,6 +353,39 @@ function runBundledInit(agent: string): Promise<{ ok: boolean; error?: string }>
           resolve({ ok: false, error: stderr || error.message });
         } else {
           resolve({ ok: true });
+        }
+      }
+    );
+  });
+}
+
+function runBundledAuditMcp(workspace?: string): Promise<{ ok: boolean; output?: string; error?: string }> {
+  return new Promise((resolve) => {
+    const cli = bundledCliPath();
+    if (!fs.existsSync(cli)) {
+      resolve({ ok: false, error: "bundled CLI not found" });
+      return;
+    }
+    const args = [cli, "audit-mcp"];
+    const root = workspace ?? getWorkspaceRoot();
+    if (root) {
+      args.push("--workspace", root);
+    }
+    child_process.execFile(
+      process.execPath,
+      args,
+      {
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: "1",
+          TOKVIZ_REPO_ROOT: bundledRepoRoot(),
+        },
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          resolve({ ok: false, error: stderr || error.message });
+        } else {
+          resolve({ ok: true, output: stdout });
         }
       }
     );
@@ -395,6 +426,63 @@ async function installTracking(
 
 function installedAgentsKey(agent: TokVizAgent): string {
   return `tokensaver.hooks.${agent}`;
+}
+
+async function enableProseMode(): Promise<void> {
+  const targets = detectActiveAgents();
+  const agents =
+    targets.length > 0
+      ? targets.map((t) => t.agent)
+      : (["cursor", "copilot"] as TokVizAgent[]);
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Installing terse output rules…",
+      cancellable: false,
+    },
+    async () => {
+      for (const agent of agents) {
+        await runBundledInit(agent, { prose: "full" });
+      }
+    }
+  );
+
+  vscode.window.showInformationMessage(
+    "TokenSaver: prose rules installed. Reload the window to apply."
+  );
+}
+
+async function auditMcp(): Promise<void> {
+  const result = await runBundledAuditMcp();
+  if (!result.ok) {
+    vscode.window.showWarningMessage(
+      `TokenSaver: MCP audit failed. ${result.error ?? ""}`.trim()
+    );
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument({
+    content: result.output ?? "No MCP servers found.",
+    language: "markdown",
+  });
+  await vscode.window.showTextDocument(doc, { preview: true });
+}
+
+async function maybeAuditMcpOnStartup(): Promise<void> {
+  const enabled = vscode.workspace
+    .getConfiguration("tokensaver")
+    .get<boolean>("auditMcpOnStartup", true);
+  if (!enabled) return;
+  const result = await runBundledAuditMcp();
+  if (!result.ok || !result.output) return;
+  if (result.output.includes("No MCP servers detected")) return;
+  if (!result.output.includes("Estimated overhead")) return;
+  const match = result.output.match(/~\d[\d,]*/);
+  if (!match) return;
+  const tokens = match[0];
+  vscode.window.showInformationMessage(
+    `TokenSaver: MCP overhead ~${tokens} tokens/step. Run "Audit MCP Servers" for details.`
+  );
 }
 
 async function enableTracking(): Promise<void> {
@@ -487,6 +575,16 @@ class DashboardViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((message) => {
       if (message?.type === "enableTracking") {
         vscode.commands.executeCommand("tokensaver.enableTracking");
+      } else if (message?.type === "enableProseMode") {
+        vscode.commands.executeCommand("tokensaver.enableProseMode");
+      } else if (message?.type === "auditMcp") {
+        vscode.commands.executeCommand("tokensaver.auditMcp");
+      } else if (message?.type === "setPeriod") {
+        const period = message.period as DashboardPeriod;
+        if (period === "today" || period === "yesterday" || period === "7d" || period === "30d" || period === "all") {
+          dashboardPeriod = period;
+          void extensionContext?.globalState.update("tokensaver.dashboardPeriod", period);
+        }
       } else if (message?.type === "ready") {
         refresh();
       }
@@ -636,6 +734,66 @@ function getDashboardHtml(catSrc: string): string {
     font-size: 10px; color: var(--vscode-descriptionForeground);
   }
 
+  .alert-banner {
+    margin: 12px 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
+    background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, #cca700) 15%, transparent);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .alert-banner.action {
+    border-color: var(--vscode-inputValidation-errorBorder, #f14c4c);
+    background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground, #f14c4c) 12%, transparent);
+  }
+  .alert-banner button {
+    margin-top: 8px;
+    padding: 6px 10px;
+    border: none;
+    border-radius: 6px;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    cursor: pointer;
+    font-size: 11px;
+  }
+
+  .period-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 14px;
+  }
+  .period-tab {
+    flex: 1 1 auto;
+    min-width: 58px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-input-background);
+    color: var(--vscode-foreground);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .period-tab:hover {
+    border-color: var(--vscode-charts-green);
+  }
+  .period-tab.active {
+    background: color-mix(in srgb, var(--vscode-charts-green) 18%, var(--vscode-input-background));
+    border-color: var(--vscode-charts-green);
+    color: var(--vscode-charts-green);
+  }
+  .period-tab .tab-count {
+    display: block;
+    font-size: 9px;
+    font-weight: 400;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 2px;
+  }
+  .period-tab.active .tab-count { color: var(--vscode-charts-green); }
+
   .projections-section {
     margin-top: 18px;
     padding: 14px;
@@ -766,33 +924,43 @@ function getDashboardHtml(catSrc: string): string {
   </div>
 
   <div class="content hidden" id="content">
+    <nav class="period-tabs" id="periodTabs" aria-label="Time period">
+      <button type="button" class="period-tab active" data-period="today">Today<span class="tab-count" data-count="today"></span></button>
+      <button type="button" class="period-tab" data-period="yesterday">Yesterday<span class="tab-count" data-count="yesterday"></span></button>
+      <button type="button" class="period-tab" data-period="7d">7 days<span class="tab-count" data-count="7d"></span></button>
+      <button type="button" class="period-tab" data-period="30d">30 days<span class="tab-count" data-count="30d"></span></button>
+      <button type="button" class="period-tab" data-period="all">All time<span class="tab-count" data-count="all"></span></button>
+    </nav>
+
     <div class="hero">
       <div class="big" id="heroSaved">0</div>
-      <div class="sub">tokens saved · <span id="heroPercent">0%</span> overall</div>
+      <div class="sub">tokens saved · <span id="heroPercent">0%</span> <span id="heroPeriodLabel">today</span></div>
       <div class="sub" id="heroEffective" style="margin-top:6px;color:var(--vscode-charts-green)"></div>
     </div>
 
+    <div id="alerts"></div>
+
     <div class="grid">
-      <div class="card"><div class="label">Today</div><div class="value" id="today">0</div></div>
-      <div class="card"><div class="label">Events</div><div class="value" id="events">0</div></div>
-      <div class="card"><div class="label">Raw (before)</div><div class="value" id="raw">0</div></div>
-      <div class="card"><div class="label">Optimized (after)</div><div class="value" id="opt">0</div></div>
+      <div class="card"><div class="label" id="gridEventsLabel">Events</div><div class="value" id="periodEvents">0</div></div>
+      <div class="card"><div class="label">Compression</div><div class="value" id="periodPct">0%</div></div>
+      <div class="card"><div class="label">Raw (before)</div><div class="value" id="periodRaw">0</div></div>
+      <div class="card"><div class="label">Optimized (after)</div><div class="value" id="periodOpt">0</div></div>
     </div>
 
     <div class="verify-section">
-      <h3>Today — compression check</h3>
+      <h3 id="verifyTitle">Period — compression check</h3>
       <div class="verify-flow">
         <div class="verify-box">
           <div class="verify-label">Raw tokens</div>
-          <div class="verify-value" id="todayRaw">0</div>
+          <div class="verify-value" id="verifyRaw">0</div>
         </div>
         <div class="verify-arrow">→</div>
         <div class="verify-box opt">
           <div class="verify-label">After compression</div>
-          <div class="verify-value" id="todayOpt">0</div>
+          <div class="verify-value" id="verifyOpt">0</div>
         </div>
       </div>
-      <div class="verify-summary" id="todayVerify">No events today yet.</div>
+      <div class="verify-summary" id="verifySummary">No events in this period.</div>
     </div>
 
     <div class="bar-wrap">
@@ -803,10 +971,10 @@ function getDashboardHtml(catSrc: string): string {
 
     <div class="projections-section">
       <h3 class="section-title">Projections</h3>
-      <p class="section-subtitle">At today's pace, you'll save...</p>
+      <p class="section-subtitle" id="projSubtitle">At today's pace, you'll save...</p>
       <div class="projections-grid">
         <div class="projection-card">
-          <div class="projection-label">Per day</div>
+          <div class="projection-label">Avg / day</div>
           <div class="projection-value" id="projDaily">0</div>
           <div class="projection-unit">tokens</div>
         </div>
@@ -823,13 +991,13 @@ function getDashboardHtml(catSrc: string): string {
         <div class="projection-card highlight">
           <div class="projection-label">Monthly savings</div>
           <div class="projection-value" id="projCost">$0.00</div>
-          <div class="projection-unit">per month</div>
+          <div class="projection-unit">estimated</div>
         </div>
       </div>
     </div>
 
     <div class="cmd-section" id="cmdSection">
-      <h3>Compression by command</h3>
+      <h3 id="cmdTitle">Compression by command</h3>
       <table class="cmd-table" id="cmdTable">
         <thead>
           <tr><th>Command</th><th class="num">Count</th><th class="num">Compress.</th></tr>
@@ -839,6 +1007,22 @@ function getDashboardHtml(catSrc: string): string {
       <div class="cmd-hint" id="cmdHint"></div>
     </div>
 
+    <div class="verify-section" id="versionSection">
+      <h3>Since <span id="versionLabel">update</span></h3>
+      <div class="verify-flow">
+        <div class="verify-box">
+          <div class="verify-label">Raw tokens</div>
+          <div class="verify-value" id="versionRaw">0</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-box opt">
+          <div class="verify-label">After compression</div>
+          <div class="verify-value" id="versionOpt">0</div>
+        </div>
+      </div>
+      <div class="verify-summary" id="versionVerify">Waiting for shell events after update.</div>
+    </div>
+
     <div class="agents" id="agents"></div>
   </div>
 
@@ -846,10 +1030,12 @@ function getDashboardHtml(catSrc: string): string {
 
 <script>
   const vscode = acquireVsCodeApi();
+  let latestStats = null;
+  let selectedPeriod = 'today';
 
   function fmt(n) {
     if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-    return String(n);
+    return String(Math.round(n || 0));
   }
 
   function fmtTokens(n) {
@@ -862,19 +1048,186 @@ function getDashboardHtml(catSrc: string): string {
     return '$' + n.toFixed(2);
   }
 
+  function renderPeriod(period) {
+    if (!latestStats || !latestStats.periods) return;
+    selectedPeriod = period;
+    const p = latestStats.periods[period];
+    if (!p) return;
+
+    document.querySelectorAll('.period-tab').forEach((btn) => {
+      btn.classList.toggle('active', btn.getAttribute('data-period') === period);
+    });
+
+    const comp = p.compression || {};
+    const eff = p.effective || {};
+    const proj = p.projections || {};
+
+    document.getElementById('heroSaved').textContent = fmt(p.savedTokens);
+    document.getElementById('heroPercent').textContent = comp.compressionPercent.toFixed(1) + '%';
+    document.getElementById('heroPeriodLabel').textContent = p.label.toLowerCase();
+
+    const heroEff = document.getElementById('heroEffective');
+    if (eff.activeEvents > 0) {
+      heroEff.textContent = eff.compressionPercent.toFixed(1) + '% when compression fires (' +
+        eff.activeEvents + '/' + eff.totalEvents + ' events)';
+    } else if (comp.events > 0) {
+      heroEff.textContent = comp.events + ' event(s) — mostly short outputs with little to compress.';
+    } else {
+      heroEff.textContent = 'No activity in this period yet.';
+    }
+
+    document.getElementById('periodEvents').textContent = fmt(comp.events);
+    document.getElementById('periodPct').textContent = comp.compressionPercent.toFixed(1) + '%';
+    document.getElementById('periodRaw').textContent = fmtTokens(comp.rawTokens);
+    document.getElementById('periodOpt').textContent = fmtTokens(comp.optimizedTokens);
+
+    document.getElementById('verifyTitle').textContent = p.label + ' — compression check';
+    document.getElementById('verifyRaw').textContent = fmtTokens(comp.rawTokens);
+    document.getElementById('verifyOpt').textContent = fmtTokens(comp.optimizedTokens);
+    const verify = document.getElementById('verifySummary');
+    if (!comp.events) {
+      verify.textContent = 'No events in this period.';
+      verify.className = 'verify-summary';
+    } else if (comp.savedTokens > 0) {
+      verify.textContent = fmtTokens(comp.savedTokens) + ' saved · ' +
+        comp.compressionPercent.toFixed(1) + '% · ' + comp.events + ' events';
+      verify.className = 'verify-summary active';
+    } else {
+      verify.textContent = 'No compression in this period (' + comp.events + ' events).';
+      verify.className = 'verify-summary none';
+    }
+
+    const barPct = eff.activeEvents > 0 ? eff.compressionPercent : comp.compressionPercent;
+    const pct = Math.max(0, Math.min(100, barPct));
+    const bar = document.getElementById('bar');
+    bar.style.width = pct + '%';
+    bar.textContent = pct.toFixed(0) + '%';
+    document.getElementById('barHint').textContent = eff.activeEvents > 0
+      ? p.label + ': ' + eff.compressionPercent.toFixed(1) + '% on ' + eff.activeEvents + ' compressed events.'
+      : (comp.events > 0
+        ? 'Run verbose shell via agent (git diff, tests, logs) to see higher rates.'
+        : 'Switch period tabs to explore your history.');
+
+    document.getElementById('projSubtitle').textContent = proj.subtitle || '';
+    document.getElementById('projDaily').textContent = fmtTokens(proj.dailyAvg);
+    document.getElementById('projWeekly').textContent = fmtTokens(proj.weeklyEst);
+    document.getElementById('projMonthly').textContent = fmtTokens(proj.monthlyEst);
+    document.getElementById('projCost').textContent = fmtUsd(proj.monthlyCostUSD);
+
+    document.getElementById('cmdTitle').textContent = 'Compression by command — ' + p.label.toLowerCase();
+
+    const cmdBody = document.getElementById('cmdBody');
+    const cmdHint = document.getElementById('cmdHint');
+    const breakdown = (p.commandBreakdown || []).filter(r => r.command !== 'TOTAL');
+    const totalRow = (p.commandBreakdown || []).find(r => r.command === 'TOTAL');
+    if (breakdown.length) {
+      cmdBody.innerHTML = breakdown.map(r => {
+        const cls = r.command === 'other' ? ' class="other"' : '';
+        return '<tr' + cls + '><td>' + r.command + '</td><td class="num">' + r.count +
+          '</td><td class="num">' + r.compressionPercent.toFixed(1) + '%</td></tr>';
+      }).join('') + (totalRow
+        ? '<tr class="total"><td>TOTAL</td><td class="num">' + totalRow.count +
+          '</td><td class="num">' + totalRow.compressionPercent.toFixed(1) + '%</td></tr>'
+        : '');
+      cmdHint.textContent = breakdown.length
+        ? 'Per-command rate for shell events in ' + p.label.toLowerCase() + '.'
+        : '';
+    } else {
+      cmdBody.innerHTML = '';
+      cmdHint.textContent = 'No shell events in ' + p.label.toLowerCase() + '.';
+    }
+
+    const agents = document.getElementById('agents');
+    const rows = (p.byAgent || []).filter(a => a.events > 0);
+    agents.innerHTML = rows.length
+      ? '<h3>By agent — ' + p.label.toLowerCase() + '</h3>' + rows.map(a =>
+        '<div class="agent-row"><span class="name">' + a.agent + '</span>' +
+        '<span class="meta">' + fmt(a.savedTokens) + ' saved · ' +
+        a.savingsPercent.toFixed(0) + '%</span></div>'
+      ).join('')
+      : '';
+
+    const alerts = document.getElementById('alerts');
+    const alertParts = [];
+    if ((p.proseRatio || 0) > 40) {
+      alertParts.push(
+        '<div class="alert-banner action"><strong>High prose (' + p.proseRatio.toFixed(0) + '%)</strong><br>' +
+        'Assistant replies dominate this period. Enable terse output rules.' +
+        '<br><button data-action="enableProse">Enable prose compression</button></div>'
+      );
+    }
+    if ((p.mcpRatio || 0) > 25) {
+      alertParts.push(
+        '<div class="alert-banner action"><strong>High MCP (' + p.mcpRatio.toFixed(0) + '%)</strong><br>' +
+        'MCP outputs are heavy in this period.' +
+        '<br><button data-action="auditMcp">Run MCP audit</button></div>'
+      );
+    }
+    alerts.innerHTML = alertParts.join('');
+  }
+
+  function updateTabCounts(stats) {
+    const periods = stats.periods || {};
+    document.querySelectorAll('[data-count]').forEach((el) => {
+      const key = el.getAttribute('data-count');
+      const saved = periods[key]?.savedTokens || 0;
+      el.textContent = saved > 0 ? fmt(saved) + ' saved' : '0 events';
+    });
+  }
+
+  function renderVersion(s) {
+    const version = s.versionCompression || {};
+    const versionEff = s.versionEffectiveCompression || {};
+    document.getElementById('versionLabel').textContent = s.versionLabel || 'update';
+    document.getElementById('versionRaw').textContent = fmtTokens(version.rawTokens);
+    document.getElementById('versionOpt').textContent = fmtTokens(version.optimizedTokens);
+    const versionVerify = document.getElementById('versionVerify');
+    if (!version.events) {
+      versionVerify.textContent = 'No events since this extension version yet.';
+      versionVerify.className = 'verify-summary';
+    } else if (version.savedTokens > 0) {
+      versionVerify.textContent = fmtTokens(version.savedTokens) + ' saved since update · ' +
+        version.compressionPercent.toFixed(1) + '% · ' + version.events + ' events';
+      versionVerify.className = 'verify-summary active';
+    } else {
+      versionVerify.textContent = version.events + ' events since update.';
+      versionVerify.className = 'verify-summary none';
+    }
+  }
+
   document.getElementById('enableBtn').addEventListener('click', () => {
     vscode.postMessage({ type: 'enableTracking' });
+  });
+
+  document.getElementById('periodTabs').addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-period]');
+    if (!btn) return;
+    const period = btn.getAttribute('data-period');
+    selectedPeriod = period;
+    renderPeriod(period);
+    vscode.postMessage({ type: 'setPeriod', period: period });
+  });
+
+  document.getElementById('alerts').addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.action === 'enableProse') {
+      vscode.postMessage({ type: 'enableProseMode' });
+    } else if (target.dataset.action === 'auditMcp') {
+      vscode.postMessage({ type: 'auditMcp' });
+    }
   });
 
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (msg.type !== 'stats') return;
     const s = msg.stats;
+    latestStats = s;
 
     const empty = document.getElementById('empty');
     const content = document.getElementById('content');
 
-    if (!s.events || s.savedTokens <= 0) {
+    if (!s.events) {
       empty.classList.remove('hidden');
       content.classList.add('hidden');
       const anyHooks = (s.hooks || []).some(h => h.installed);
@@ -888,102 +1241,10 @@ function getDashboardHtml(catSrc: string): string {
     empty.classList.add('hidden');
     content.classList.remove('hidden');
 
-    document.getElementById('heroSaved').textContent = fmt(s.savedTokens);
-    document.getElementById('heroPercent').textContent = s.savingsPercent.toFixed(1) + '%';
-    const eff = s.effectiveCompression || {};
-    const heroEff = document.getElementById('heroEffective');
-    if (eff.activeEvents > 0) {
-      heroEff.textContent = eff.compressionPercent.toFixed(1) + '% when compression fires (' +
-        eff.activeEvents + '/' + eff.totalEvents + ' shell events)';
-    } else {
-      heroEff.textContent = '';
-    }
-    document.getElementById('today').textContent = fmt(s.todaySaved);
-    document.getElementById('events').textContent = fmt(s.events);
-
-    const total = s.totalCompression || {};
-    document.getElementById('raw').textContent = fmtTokens(total.rawTokens);
-    document.getElementById('opt').textContent = fmtTokens(total.optimizedTokens);
-
-    const today = s.todayCompression || {};
-    document.getElementById('todayRaw').textContent = fmtTokens(today.rawTokens);
-    document.getElementById('todayOpt').textContent = fmtTokens(today.optimizedTokens);
-    const verify = document.getElementById('todayVerify');
-    if (!today.events) {
-      verify.textContent = 'No events today yet.';
-      verify.className = 'verify-summary';
-    } else if (today.savedTokens > 0) {
-      verify.textContent = fmtTokens(today.savedTokens) + ' saved today · ' +
-        today.compressionPercent.toFixed(1) + '% compression · ' + today.events + ' events';
-      verify.className = 'verify-summary active';
-    } else {
-      verify.textContent = 'No compression today — raw equals optimized (' + today.events + ' events)';
-      verify.className = 'verify-summary none';
-    }
-
-    const bar = document.getElementById('bar');
-    const barHint = document.getElementById('barHint');
-    const barPct = eff.activeEvents > 0 ? eff.compressionPercent : s.savingsPercent;
-    const pct = Math.max(0, Math.min(100, barPct));
-    bar.style.width = pct + '%';
-    bar.textContent = pct.toFixed(0) + '%';
-    barHint.textContent = eff.activeEvents > 0
-      ? 'Overall ' + s.savingsPercent.toFixed(1) + '% includes short outputs left unchanged.'
-      : 'Verbose shell output (git diff, tests, logs) compresses more — keep working.';
-
-    const p = s.projections || {};
-    document.getElementById('projDaily').textContent = fmtTokens(p.dailyTokens);
-    document.getElementById('projWeekly').textContent = fmtTokens(p.weeklyTokens);
-    document.getElementById('projMonthly').textContent = fmtTokens(p.monthlyTokens);
-    document.getElementById('projCost').textContent = fmtUsd(p.monthlyCostSavedUSD);
-
-    const cmdBody = document.getElementById('cmdBody');
-    const cmdHint = document.getElementById('cmdHint');
-    const breakdown = (s.commandBreakdown || []).filter(r => r.command !== 'TOTAL');
-    const totalRow = (s.commandBreakdown || []).find(r => r.command === 'TOTAL');
-    if (breakdown.length) {
-      const rowsHtml = breakdown.map(r => {
-        const cls = r.command === 'other' ? ' class="other"' : '';
-        return '<tr' + cls + '><td>' + r.command + '</td><td class="num">' + r.count +
-          '</td><td class="num">' + r.compressionPercent.toFixed(1) + '%</td></tr>';
-      }).join('');
-      const totalHtml = totalRow
-        ? '<tr class="total"><td>TOTAL</td><td class="num">' + totalRow.count +
-          '</td><td class="num">' + totalRow.compressionPercent.toFixed(1) + '%</td></tr>'
-        : '';
-      cmdBody.innerHTML = rowsHtml + totalHtml;
-
-      const other = breakdown.find(r => r.command === 'other');
-      const specialized = breakdown.filter(r => r.command !== 'other');
-      const specializedPct = specialized.reduce((n, r) => n + r.count, 0);
-      const otherPct = totalRow && totalRow.count > 0
-        ? Math.round((other?.count || 0) / totalRow.count * 100)
-        : 0;
-      if (other && other.count > 0 && specialized.length > 0) {
-        cmdHint.textContent = 'Strong compressors (git, tests, logs) work well. ' +
-          otherPct + '% of events are short/other commands with little to compress. ' +
-          'Add kubectl, aws, grep compressors to raise global rate.';
-      } else if (!specialized.length) {
-        cmdHint.textContent = 'Command names were not logged on older events — reload after update; new shell runs will populate this table.';
-      } else {
-        cmdHint.textContent = 'Per-command rate uses raw vs optimized tokens for each shell event.';
-      }
-    } else {
-      cmdBody.innerHTML = '';
-      cmdHint.textContent = 'No shell events yet.';
-    }
-
-    const agents = document.getElementById('agents');
-    const rows = (s.byAgent || []).filter(a => a.events > 0);
-    if (rows.length) {
-      agents.innerHTML = '<h3>By agent</h3>' + rows.map(a =>
-        '<div class="agent-row"><span class="name">' + a.agent + '</span>' +
-        '<span class="meta">' + fmt(a.savedTokens) + ' saved · ' +
-        a.savingsPercent.toFixed(0) + '%</span></div>'
-      ).join('');
-    } else {
-      agents.innerHTML = '';
-    }
+    updateTabCounts(s);
+    renderVersion(s);
+    const period = s.defaultPeriod || selectedPeriod || 'today';
+    renderPeriod(period);
   });
 
   vscode.postMessage({ type: 'ready' });
@@ -999,7 +1260,11 @@ function getDashboardHtml(catSrc: string): string {
 export function activate(context: vscode.ExtensionContext): void {
   console.log("TokenSaver extension activated");
 
+  extensionContext = context;
   extensionPath = context.extensionPath;
+  dashboardPeriod = context.globalState.get<DashboardPeriod>("tokensaver.dashboardPeriod", "today");
+  setupMetricsBaseline(context);
+  ensureCompressionConfig();
   // Keep installed hooks pointed at this version's bundled CLI.
   writeCliPath();
 
@@ -1022,7 +1287,12 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.executeCommand("tokensaver.dashboard.focus");
     }),
     vscode.commands.registerCommand("tokensaver.enableTracking", enableTracking),
-    vscode.commands.registerCommand("tokensaver.refresh", refresh)
+    vscode.commands.registerCommand("tokensaver.enableProseMode", enableProseMode),
+    vscode.commands.registerCommand("tokensaver.auditMcp", auditMcp),
+    vscode.commands.registerCommand("tokensaver.refresh", refresh),
+    vscode.commands.registerCommand("tokensaver.resetMetrics", () =>
+      resetMetricsBaseline(context)
+    )
   );
 
   // React to relevant configuration changes.
@@ -1038,6 +1308,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Silent TokViz setup: detect Copilot / Cursor / Gemini-Antigravity, install hooks.
   void autoEnableDetectedAgents(context);
+  void maybeAuditMcpOnStartup();
 
   // Re-check every 5 min in case user installs a new agent later.
   const agentRecheck = setInterval(() => {
